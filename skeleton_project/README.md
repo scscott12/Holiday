@@ -1,4 +1,4 @@
-## Holiday Skeleton (PCA9685 + MQTT + Home Assistant)
+# Holiday Skeleton (PCA9685 + MQTT + Home Assistant)
 
 One-file animatronic skeleton that **listens → thinks → speaks**, with **moving jaw** and **PWM eyes** via PCA9685, offline **Vosk** STT, **Piper** TTS, and optional **Ollama** LLM quips. Auto-publishes **MQTT discovery** so Home Assistant gets clean controls out-of-the-box.
 
