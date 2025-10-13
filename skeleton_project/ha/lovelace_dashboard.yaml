@@ -1,0 +1,23 @@
+title: Skeleton
+views:
+  - title: Controls
+    cards:
+      - type: entities
+        title: Skeleton Main
+        entities:
+          - switch.skeleton_motion_enabled
+          - switch.skeleton_night_mode
+          - number.skeleton_eyes_dim
+          - number.skeleton_eyes_full
+          - number.skeleton_volume
+          - button.skeleton_blink
+          - button.skeleton_flicker
+          - button.skeleton_say
+      - type: entities
+        title: Status
+        entities:
+          - binary_sensor.skeleton_motion
+          - binary_sensor.skeleton_speaking
+          - sensor.skeleton_status
+          - sensor.skeleton_reply_time
+          - sensor.skeleton_transcript
