@@ -1,0 +1,17 @@
+[Service]
+Environment="DEVICE_NAME=skeleton"
+Environment="MQTT_HOST=<ipAddress>"
+Environment="MQTT_PORT=1883"
+Environment="MQTT_USER=<Username>"
+Environment="MQTT_PASS=your!pass"
+
+Environment="EYES_INVERT=0"
+Environment="EYES_IDLE_FRAC=0.0"
+Environment="EYES_LISTEN_FRAC=0.18"
+Environment="EYES_SPEAK_FRAC=1.0"
+
+Environment="JAW_MIN_US=512"
+Environment="JAW_MAX_US=1000"
+Environment="PIR_PIN=17"
+Environment="EYES_CH=4"
+Environment="JAW_CH=0"

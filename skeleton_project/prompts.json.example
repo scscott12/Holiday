@@ -1,0 +1,18 @@
+{
+  "SYSTEM_PROMPT": "You are a semi-retired pirate\u2026 (override me)",
+  "MORNING_LINES": [
+    "Morning override example 1"
+  ],
+  "AFTERNOON_LINES": [
+    "Afternoon override example 1"
+  ],
+  "EVENING_LINES": [
+    "Evening override example 1"
+  ],
+  "NIGHT_LINES": [
+    "Night override example 1"
+  ],
+  "GOODBYE_LINES": [
+    "Goodbye override example 1"
+  ]
+}

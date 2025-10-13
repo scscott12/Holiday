@@ -1,0 +1,18 @@
+[Unit]
+Description=Holiday Skeleton (ONE-FILE) Service
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=scscott
+Group=scscott
+WorkingDirectory=/opt/holiday-skeleton
+ExecStart=/opt/holiday-skeleton/venv/bin/python /opt/holiday-skeleton/skeleton_all_in_one_mqtt.py
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+SupplementaryGroups=gpio i2c audio video
+
+[Install]
+WantedBy=multi-user.target

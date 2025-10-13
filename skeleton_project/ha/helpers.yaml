@@ -1,0 +1,8 @@
+input_text:
+  skeleton_line:
+    name: Skeleton Line
+    max: 240
+
+input_button:
+  skeleton_say_button:
+    name: Skeleton Say It

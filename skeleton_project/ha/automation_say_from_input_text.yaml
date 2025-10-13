@@ -1,0 +1,11 @@
+alias: Skeleton - Say from input_text
+description: Publish the value of input_text.skeleton_line to MQTT when button is pressed
+mode: single
+trigger:
+  - platform: state
+    entity_id: input_button.skeleton_say_button
+action:
+  - service: mqtt.publish
+    data:
+      topic: holiday/skeleton/say/set
+      payload: "{{ states('input_text.skeleton_line') }}"

@@ -1,0 +1,8 @@
+adafruit-circuitpython-pca9685
+adafruit-circuitpython-motor
+gpiozero
+vosk
+sounddevice
+paho-mqtt
+numpy
+requests

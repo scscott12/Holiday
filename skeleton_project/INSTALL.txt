@@ -1,0 +1,53 @@
+# Fresh install (Raspberry Pi OS Bookworm)
+
+## 0) System deps & groups
+sudo apt-get update
+sudo apt-get install -y python3-venv python3-dev libatlas-base-dev libopenblas-dev \
+                        portaudio19-dev alsa-utils i2c-tools python3-lgpio
+sudo usermod -aG i2c,audio,video,gpio $USER
+
+## 1) App layout
+sudo mkdir -p /opt/holiday-skeleton
+sudo cp skeleton_all_in_one_mqtt.py /opt/holiday-skeleton/
+cd /opt/holiday-skeleton
+sudo python3 -m venv venv
+sudo /opt/holiday-skeleton/venv/bin/pip install --upgrade pip
+sudo /opt/holiday-skeleton/venv/bin/pip install -r /path/to/requirements.txt
+
+## 2) Systemd service
+sudo cp /path/to/systemd/holiday-skeleton.service /etc/systemd/system/holiday-skeleton.service
+sudo mkdir -p /etc/systemd/system/holiday-skeleton.service.d
+sudo cp /path/to/systemd/override.conf.example /etc/systemd/system/holiday-skeleton.service.d/override.conf
+# Edit override to your broker/user/pass; wrap password in quotes if it has "!"
+sudo nano /etc/systemd/system/holiday-skeleton.service.d/override.conf
+
+sudo systemctl daemon-reload
+sudo systemctl enable holiday-skeleton
+sudo systemctl start holiday-skeleton
+sudo journalctl -u holiday-skeleton -f
+
+## 3) Home Assistant
+# (optional) clear out old retained discovery for this device
+cd scripts
+export MQTT_HOST=192.168.68.70
+export MQTT_USER=<Username>
+export MQTT_PASS='your!pass'
+./nuke_discovery.sh skeleton
+
+# publish minimal discovery
+pip install paho-mqtt
+./publish_minimal_discovery.py
+
+# In HA: Settings → Devices & Services → MQTT → Check for new devices.
+
+## 4) HA helpers (optional)
+# If you manage config in YAML, merge the two files then reload
+#   ha/helpers.yaml
+#   ha/automation_say_from_input_text.yaml
+
+## 5) Tuning
+- PIR: adjust hardware trimmer or MOTION_HOLD_SEC / MOTION_COOLDOWN_SEC envs.
+- EYES_INVERT=1 if your LED driver is active-low.
+- JAW_MIN_US/JAW_MAX_US to set jaw travel.
+- Eyes Dim/Full % and Volume % are "number" controls in HA with box entry.
+- Night mode reduces brightness & volume.
