@@ -12,16 +12,12 @@ One-file animatronic skeleton that **listens → thinks → speaks**, with **mov
 **I2C check:** `sudo i2cdetect -y 1` should show `40`.
 
 ## Wiring Notes
-![Wiring](docs/wiring_diagram.png)
-
 - **Eyes (LEDs):** PCA9685 CH4 → NPN/MOSFET gate. LED anode to +5V through resistor, cathode to MOSFET drain/collector; MOSFET source/emitter to GND. Don’t forget **common ground** between Pi, PCA9685, and LED supply.
 - **Servo (Jaw):** PCA9685 CH0 signal → servo signal; provide **adequate 5–6V** and current for servo separately; **common ground** required.
 - **PIR:** OUT → GPIO17; VCC → 5V (module-dependent); GND → GND. Tweak sensitivity & retrigger knobs to reduce false triggers.
 
 ## Home Assistant
 Clean discovery is published to topics under `homeassistant/…` with device name `skeleton` (configurable). Minimal controls only.
-
-![Controls](docs/HA_controls.png)
 
 ### Optional: Type-to-Say
 Use `ha/helpers.yaml` (an `input_text`) and `ha/automation_say_from_input_text.yaml` to push text to `holiday/skeleton/say/set`.
