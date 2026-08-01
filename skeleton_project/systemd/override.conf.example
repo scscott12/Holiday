@@ -39,6 +39,9 @@ Environment="PERSONALITIES_ENABLED=1"
 Environment="PERSONALITIES_PATH=/opt/holiday-skeleton/personalities.json"
 Environment="PERSONALITY=pirate"
 
+# Validate and atomically reload personalities, scenes, and WAV cues while idle.
+Environment="CONTENT_RELOAD_ENABLED=1"
+
 # Persist only operator controls. The base service creates and owns this directory.
 Environment="PERSIST_SETTINGS_ENABLED=1"
 Environment="PERSIST_SETTINGS_PATH=/var/lib/holiday-skeleton/operator-settings.json"

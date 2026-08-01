@@ -19,6 +19,11 @@ from holiday_skeleton.brain import (
     OllamaStreamingClient,
     normalize_ollama_chat_url,
 )
+from holiday_skeleton.content import (
+    ContentReloadError,
+    ContentReloadInterrupted,
+    prepare_content,
+)
 from holiday_skeleton.controller import EventKind, RuntimeState, SkeletonController
 from holiday_skeleton.discovery import discovery_messages
 from holiday_skeleton.idle_life import IdleAction, IdleDecision, IdleLifeScheduler
@@ -146,6 +151,7 @@ SCENE_MAX_SECONDS = float(envs("SCENE_MAX_SECONDS","30"))
 PERSONALITIES_ENABLED = envs("PERSONALITIES_ENABLED","1").strip().lower() in ("1","true","yes","on")
 PERSONALITIES_PATH = envs("PERSONALITIES_PATH",os.path.join(os.path.dirname(__file__),"personalities.json"))
 PERSONALITY_REQUESTED = envs("PERSONALITY","").strip().lower()
+CONTENT_RELOAD_ENABLED = envs("CONTENT_RELOAD_ENABLED","1").strip().lower() in ("1","true","yes","on")
 
 PERSIST_SETTINGS_ENABLED = envs("PERSIST_SETTINGS_ENABLED","1").strip().lower() in ("1","true","yes","on")
 PERSIST_SETTINGS_PATH = envs(
@@ -264,6 +270,16 @@ _personality_load_error=""
 _personality_switch_count=0
 _personality_last_result="starting"
 _personality_last_error="none"
+
+_content_reload_active=False
+_content_reload_pending=False
+_content_reload_state="starting"
+_content_reload_last_result="never"
+_content_reload_last_error="none"
+_content_reload_last_run="never"
+_content_reload_last_duration=0.0
+_content_reload_count=0
+_content_reload_interrupted=0
 
 _settings_store=None
 _settings_loaded=None
@@ -477,6 +493,9 @@ def _enqueue(kind,payload=None,source="mqtt"):
 
 def _on_message(client,userdata,msg):
     t=msg.topic; p=msg.payload.decode("utf-8","ignore").strip()
+    if t.endswith("/content/reload/set"):
+        _request_content_reload()
+        return
     if t.endswith("/self_test/run/set"):
         _request_self_test()
         return
@@ -530,7 +549,7 @@ def _on_connect(client,userdata,flags,rc,properties=None):
               "motion/trigger/set","motion/enabled/set","idle_life/enabled/set",
               "scene/play/set","scene/stop/set","personality/set",
               "personality/default_scene/play/set","self_test/run/set",
-              "self_test/stop/set","night_mode/set","restart/set"]
+              "self_test/stop/set","content/reload/set","night_mode/set","restart/set"]
         for path in subs:
             try: client.subscribe(f"{MQTT_BASE}/{path}")
             except Exception as e: print("[mqtt subscribe]",e)
@@ -541,6 +560,7 @@ def _on_connect(client,userdata,flags,rc,properties=None):
         _publish_operator_controls()
         _publish_settings_state()
         _publish_self_test_state()
+        _publish_content_reload_state()
         _publish_watchdog_snapshot()
         if _health is not None: _health.publish_now(sample=False)
     else:
@@ -1078,6 +1098,7 @@ if gpiozero is not None:
                 controller.interrupt_idle()
                 controller.interrupt_scene()
                 controller.interrupt_self_test()
+                controller.interrupt_content_reload()
             mqtt_pub("motion","ON"); mqtt_pub("motion/count",str(motion_count))
             _schedule_motion_trigger()
         def _pir_off():
@@ -1346,6 +1367,13 @@ def _init_health_monitor():
         "self_test",
         ComponentState.STARTING if SELF_TEST_ENABLED else ComponentState.DISABLED,
         "operator self-test pending" if SELF_TEST_ENABLED else "disabled by configuration",
+        False,
+        publish=False,
+    )
+    _health.set_component(
+        "content_reload",
+        ComponentState.STARTING if CONTENT_RELOAD_ENABLED else ComponentState.DISABLED,
+        "live content reload pending" if CONTENT_RELOAD_ENABLED else "disabled by configuration",
         False,
         publish=False,
     )
@@ -1847,6 +1875,247 @@ def _prepare_scene_sounds():
     elif len(_scene_library):
         detail=f"{len(_scene_library)} scenes ready; {len(_scene_sound_cache)} cues preloaded"
         _health_set("scenes",ComponentState.READY,detail)
+
+def _content_reload_ready_state():
+    if not CONTENT_RELOAD_ENABLED: return "disabled"
+    if _content_reload_active: return "reloading"
+    if _content_reload_pending: return "queued"
+    return _content_reload_state
+
+def _publish_content_reload_state():
+    mqtt_pub("content_reload/active","ON" if _content_reload_active else "OFF",retain=True)
+    mqtt_pub("content_reload/state",_content_reload_ready_state(),retain=True)
+    mqtt_pub("content_reload/last_result",_content_reload_last_result,retain=True)
+    mqtt_pub("content_reload/last_error",_content_reload_last_error,retain=True)
+    mqtt_pub("content_reload/last_run",_content_reload_last_run,retain=True)
+    mqtt_pub("content_reload/last_duration",f"{_content_reload_last_duration:.3f}",retain=True)
+    mqtt_pub("content_reload/count",str(_content_reload_count),retain=True)
+    mqtt_pub("content_reload/interrupted",str(_content_reload_interrupted),retain=True)
+
+def _init_content_reload():
+    global _content_reload_state,_content_reload_last_result,_content_reload_last_error
+    if not CONTENT_RELOAD_ENABLED:
+        _content_reload_state="disabled"
+        _content_reload_last_result="disabled"
+        _content_reload_last_error="none"
+        _health_set("content_reload",ComponentState.DISABLED,"disabled by configuration")
+    elif not PERSONALITIES_ENABLED and not SCENES_ENABLED:
+        _content_reload_state="disabled"
+        _content_reload_last_result="disabled"
+        _content_reload_last_error="no enabled content libraries"
+        _health_set("content_reload",ComponentState.DISABLED,"no enabled content libraries")
+    else:
+        _content_reload_state="ready"
+        _content_reload_last_result="never"
+        _content_reload_last_error="none"
+        _health_set("content_reload",ComponentState.READY,"live content reload ready")
+    _publish_content_reload_state()
+
+def _request_content_reload():
+    global _content_reload_pending,_content_reload_last_result,_content_reload_last_error
+    if not CONTENT_RELOAD_ENABLED or (not PERSONALITIES_ENABLED and not SCENES_ENABLED):
+        _content_reload_last_result="disabled"
+        _content_reload_last_error="live content reload is disabled"
+        _publish_content_reload_state()
+        return False
+    if controller is None:
+        _content_reload_last_result="not_ready"
+        _content_reload_last_error="controller is not ready"
+        _publish_content_reload_state()
+        return False
+    if (
+        _content_reload_active
+        or _content_reload_pending
+        or controller.state not in (RuntimeState.IDLE,RuntimeState.COOLDOWN)
+    ):
+        _content_reload_last_result="busy"
+        _content_reload_last_error=f"controller is {controller.state.value}"
+        _publish_content_reload_state()
+        return False
+    _content_reload_pending=True
+    accepted=_enqueue(EventKind.RELOAD_CONTENT,source="mqtt")
+    if accepted:
+        _content_reload_last_result="queued"
+        _content_reload_last_error="none"
+    else:
+        _content_reload_pending=False
+        _content_reload_last_result="busy"
+        _content_reload_last_error="controller queue rejected the request"
+    _publish_content_reload_state()
+    return accepted
+
+def _reload_additional_canned_lines():
+    lines=[]
+    if not PERSONALITIES_ENABLED:
+        for group in (
+            MORNING_LINES,AFTERNOON_LINES,EVENING_LINES,NIGHT_LINES,
+            GOODBYE_LINES,IDLE_LINES,
+        ):
+            lines.extend(group)
+    if SELF_TEST_ENABLED and SELF_TEST_LINE:
+        lines.append(SELF_TEST_LINE)
+    return tuple(dict.fromkeys(str(line).strip() for line in lines if str(line).strip()))
+
+def _restore_active_speech_cache():
+    if _speech_engine is not None and TTS_CANNED_CACHE:
+        try: _speech_engine.retain_cached_phrases(_canned_speech_lines())
+        except Exception as error: print(f"[content reload] cache rollback failed: {error}")
+
+def _run_content_reload():
+    global _content_reload_active,_content_reload_pending,_content_reload_state
+    global _content_reload_last_result,_content_reload_last_error
+    global _content_reload_last_run,_content_reload_last_duration
+    global _content_reload_count,_content_reload_interrupted
+    global _personality_library,_personality_active,_personality_load_error
+    global _personality_last_result,_personality_last_error
+    global _scene_library,_scene_runner,_scene_sound_cache,_scene_sound_errors
+    global _scene_load_error,_llm_client,_barge_in_matcher,_idle_life
+
+    _content_reload_pending=False
+    if not CONTENT_RELOAD_ENABLED:
+        _content_reload_last_result="disabled"
+        _content_reload_last_error="live content reload is disabled"
+        _publish_content_reload_state()
+        return
+
+    started=time.monotonic()
+    _content_reload_count+=1
+    _content_reload_active=True
+    _content_reload_state="reloading"
+    _content_reload_last_result="running"
+    _content_reload_last_error="none"
+    _publish_content_reload_state()
+    controller.set_state(RuntimeState.CONTENT_RELOAD)
+    interrupt=controller.content_reload_interrupt_event
+
+    def reload_interrupted():
+        controller.heartbeat()
+        return interrupt.is_set()
+
+    committed=False
+    try:
+        bundle=prepare_content(
+            personalities_enabled=PERSONALITIES_ENABLED,
+            personalities_path=PERSONALITIES_PATH,
+            requested_personality=PERSONALITY_REQUESTED,
+            current_personality=_personality_active_name(),
+            scenes_enabled=SCENES_ENABLED,
+            scenes_path=SCENES_PATH,
+            sound_directory=SCENE_SOUND_DIR,
+            sound_sample_rate=(
+                _speech_engine.sample_rate if _speech_engine is not None else VOSK_RATE
+            ),
+            scene_maximum_seconds=SCENE_MAX_SECONDS,
+            cache_sounds=_speech_engine is not None,
+            additional_canned_lines=_reload_additional_canned_lines(),
+            interrupted=reload_interrupted,
+        )
+
+        active=bundle.active_personality
+        new_llm=_build_llm_client_for_pack(active) if active is not None else _llm_client
+        new_matcher=_build_barge_in_matcher_for_pack(active) if active is not None else _barge_in_matcher
+        new_idle=_build_idle_life_for_pack(active) if active is not None else _idle_life
+        new_runner=(
+            SceneRunner(
+                executor=_execute_scene_step,
+                maximum_seconds=SCENE_MAX_SECONDS,
+                progress=_scene_progress,
+            )
+            if bundle.scenes is not None
+            else None
+        )
+
+        cache_metrics=None
+        if _speech_engine is not None and TTS_CANNED_CACHE:
+            mqtt_pub("tts/cache_state","warming",retain=True)
+            cache_metrics=_speech_engine.cache_phrases(
+                bundle.canned_lines,
+                stop_event=interrupt,
+                progress=controller.heartbeat,
+            )
+            if cache_metrics.interrupted or interrupt.is_set():
+                raise ContentReloadInterrupted("reload interrupted while caching speech")
+            if cache_metrics.failed_entries:
+                raise ContentReloadError(
+                    "; ".join(cache_metrics.errors) or "canned speech preload failed"
+                )
+        if interrupt.is_set():
+            raise ContentReloadInterrupted("reload interrupted before commit")
+
+        if _speech_engine is not None and TTS_CANNED_CACHE:
+            _speech_engine.retain_cached_phrases(bundle.canned_lines)
+            cache_metrics=replace(
+                cache_metrics,
+                total_entries=_speech_engine.cache_entries,
+                pcm_bytes=_speech_engine.cache_pcm_bytes,
+            )
+
+        # All fallible preparation is complete. These assignments are the
+        # transaction's commit point and run on the serialized controller.
+        _personality_library=bundle.personalities
+        _personality_active=active
+        _personality_load_error=""
+        _scene_library=bundle.scenes
+        _scene_runner=new_runner
+        _scene_sound_cache=dict(bundle.sound_cache)
+        _scene_sound_errors={}
+        _scene_load_error=""
+        if active is not None:
+            _apply_personality_globals(active)
+            _llm_client=new_llm
+            _barge_in_matcher=new_matcher
+            _idle_life=new_idle
+            _personality_last_result="reloaded"
+            _personality_last_error="none"
+        committed=True
+
+        if cache_metrics is not None:
+            _publish_personality_cache(cache_metrics)
+
+        _content_reload_state="ready"
+        _content_reload_last_result="reloaded"
+        _content_reload_last_error="none"
+        _health_set("content_reload",ComponentState.READY,"active content reloaded")
+        if active is not None:
+            _health_set("personality",ComponentState.READY,f"{active.name}; {len(bundle.personalities)} packs loaded")
+        if bundle.scenes is not None:
+            if _speech_engine is None and _scene_requires_streaming_speech():
+                _health_set("scenes",ComponentState.DEGRADED,f"{len(bundle.scenes)} scenes; scene speech unavailable on legacy Piper")
+            else:
+                _health_set("scenes",ComponentState.READY,f"{len(bundle.scenes)} scenes ready; {len(_scene_sound_cache)} cues preloaded")
+        publish_mqtt_discovery()
+        _publish_personality_state()
+        _publish_scene_ready_state()
+        _publish_barge_in_capability()
+        _publish_idle_life_ready_state()
+        print(f"[content reload] committed {len(_personality_names())} personalities and {len(_scene_library) if _scene_library is not None else 0} scenes")
+    except ContentReloadInterrupted as error:
+        _restore_active_speech_cache()
+        _content_reload_interrupted+=1
+        _content_reload_state="ready"
+        _content_reload_last_result="interrupted"
+        _content_reload_last_error=str(error)[:255]
+        _health_set("content_reload",ComponentState.READY,"reload interrupted; active content unchanged")
+        print(f"[content reload] {error}; keeping active content")
+    except Exception as error:
+        if committed:
+            _content_reload_state="ready"
+            _content_reload_last_result="reloaded"
+            _content_reload_last_error=f"content committed; status update failed: {error}"[:255]
+            _health_set("content_reload",ComponentState.DEGRADED,_content_reload_last_error)
+            print(f"[content reload] content committed; status update failed: {error}")
+        else:
+            _restore_active_speech_cache()
+            _content_reload_state="error"
+            _content_reload_last_result="error"
+            _content_reload_last_error=str(error)[:255]
+            _health_set("content_reload",ComponentState.DEGRADED,f"reload failed; active content unchanged: {error}")
+            print(f"[content reload] failed: {error}; keeping active content")
+    finally:
+        _content_reload_active=False
+        _content_reload_last_run=datetime.now(timezone.utc).isoformat(timespec="seconds")
+        _content_reload_last_duration=max(0.0,time.monotonic()-started)
+        _publish_content_reload_state()
 
 def _scene_eye_level(level):
     level=clamp(float(level),0.0,1.0)
@@ -2391,6 +2660,8 @@ def _handle_event(event):
         _publish_scene_ready_state()
     elif event.kind is EventKind.RUN_SELF_TEST:
         _run_self_test()
+    elif event.kind is EventKind.RELOAD_CONTENT:
+        _run_content_reload()
     elif event.kind is EventKind.SAY:
         _transcript_start()
         try:
@@ -2463,6 +2734,10 @@ def _cleanup():
     except Exception: pass
     try: mqtt_pub("personality/state","stopping",retain=True)
     except Exception: pass
+    try: mqtt_pub("content_reload/active","OFF",retain=True)
+    except Exception: pass
+    try: mqtt_pub("content_reload/state","stopping",retain=True)
+    except Exception: pass
     try: mqtt_pub("availability","offline",retain=True)
     except Exception: pass
     try: _jaw_set(JAW_REST_FRAC)
@@ -2502,6 +2777,7 @@ def main():
     _init_speech_engine()
     _init_operator_self_test()
     _prepare_scene_sounds()
+    _init_content_reload()
     _init_llm_client()
     _warm_ollama()
     _publish_barge_in_capability()

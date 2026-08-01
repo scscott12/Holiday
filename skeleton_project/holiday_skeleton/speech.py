@@ -36,6 +36,7 @@ class SpeechCacheMetrics:
     audio_seconds: float
     pcm_bytes: int
     errors: tuple[str, ...] = ()
+    interrupted: bool = False
 
 
 @dataclass(frozen=True)
@@ -259,7 +260,12 @@ class PiperSpeechEngine:
             }
             return removed
 
-    def cache_phrases(self, phrases: Iterable[str]) -> SpeechCacheMetrics:
+    def cache_phrases(
+        self,
+        phrases: Iterable[str],
+        stop_event: Optional[threading.Event] = None,
+        progress: Optional[Callable[[], None]] = None,
+    ) -> SpeechCacheMetrics:
         """Pre-render unique canned lines without writing anything to the speaker.
 
         The cache belongs to this loaded voice instance, so restarting after a
@@ -279,8 +285,14 @@ class PiperSpeechEngine:
             failed_entries = 0
             rendered_samples = 0
             errors: list[str] = []
+            interrupted = False
 
             for text in requested:
+                if progress is not None:
+                    progress()
+                if stop_event is not None and stop_event.is_set():
+                    interrupted = True
+                    break
                 if text in self._cache:
                     existing_entries += 1
                     continue
@@ -293,6 +305,8 @@ class PiperSpeechEngine:
                 self._cache[text] = rendered
                 new_entries += 1
                 rendered_samples += rendered.samples
+                if progress is not None:
+                    progress()
 
             return SpeechCacheMetrics(
                 requested_entries=len(requested),
@@ -304,6 +318,7 @@ class PiperSpeechEngine:
                 audio_seconds=rendered_samples / float(self.sample_rate),
                 pcm_bytes=self.cache_pcm_bytes,
                 errors=tuple(errors),
+                interrupted=interrupted,
             )
 
     def warm_up(self, text: str = "Ready.") -> float:

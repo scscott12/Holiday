@@ -13,6 +13,7 @@ holiday_skeleton/
   audio.py                   preroll, speech gate, and endpoint timing
   barge_in.py                echo-aware interruption command monitor
   brain.py                   Ollama stream producer and phrase assembly
+  content.py                 transactional personality/scene preparation
   health.py                  health aggregation and Pi telemetry
   idle_life.py               sparse idle-action scheduler
   personality.py             validated character packs and bounded settings
@@ -25,7 +26,7 @@ holiday_skeleton/
 tests/                       hardware-free unit tests
 ```
 
-Runtime states published to `holiday/skeleton/status` are `starting`, `idle`, `idle_life`, `scene`, `self_test`, `greeting`, `listening`, `thinking`, `speaking`, `effect`, `cooldown`, `stopping`, and `error`.
+Runtime states published to `holiday/skeleton/status` are `starting`, `idle`, `idle_life`, `scene`, `self_test`, `content_reload`, `greeting`, `listening`, `thinking`, `speaking`, `effect`, `cooldown`, `stopping`, and `error`.
 
 ## Hardware (quick)
 - **Raspberry Pi** (Bookworm OK)
@@ -67,6 +68,7 @@ views:
           - entity: button.skeleton_play_personality_scene
           - entity: button.skeleton_run_self_test
           - entity: button.skeleton_stop_self_test
+          - entity: button.skeleton_reload_content
           - entity: button.skeleton_blink
           - entity: button.skeleton_flicker
           - entity: text.skeleton_say
@@ -94,6 +96,10 @@ views:
           - sensor.skeleton_self_test_step
           - sensor.skeleton_self_test_last_result
           - sensor.skeleton_self_test_last_error
+          - binary_sensor.skeleton_content_reload_active
+          - sensor.skeleton_content_reload_state
+          - sensor.skeleton_content_reload_last_result
+          - sensor.skeleton_content_reload_last_error
           - sensor.skeleton_status
           - sensor.skeleton_reply_time
           - sensor.skeleton_llm_first_token
@@ -300,7 +306,7 @@ The packaged library includes `pirate`, `graveyard_host`, and `silent_watcher`. 
 
 An accepted switch prepares the incoming Ollama client, barge-in grammar, idle scheduler, and canned-speech cache before changing the active pack. Conversation memory is already empty at this boundary and is explicitly reported as zero. Invalid settings, unknown pack names, unsafe scene names, and missing named scenes cannot partially replace a running personality during a live switch. Startup cross-checks every pack's default scene and reports any mismatch as degraded configuration. If the personality file cannot load at startup, the legacy built-in prompt and optional `prompts.json` override remain available while health reports the configuration error.
 
-Files are limited to 12 packs. Prompts, line counts and lengths, memory/context values, sampling ranges, phrase boundaries, volume multipliers, command lists, and scene identifiers are all bounded during loading. Edit `personalities.json` and restart once to reload the library itself; changing between already-loaded packs is immediate. With packs enabled, their settings take precedence over the legacy `SYSTEM_PROMPT`, `IDLE_LINES`, `LLM_*`, and `BARGE_IN_*` prompt/tuning values.
+Files are limited to 12 packs. Prompts, line counts and lengths, memory/context values, sampling ranges, phrase boundaries, volume multipliers, command lists, and scene identifiers are all bounded during loading. Edit `personalities.json` and press **Reload Content** while idle to load the changed library; changing between already-loaded packs remains immediate. With packs enabled, their settings take precedence over the legacy `SYSTEM_PROMPT`, `IDLE_LINES`, `LLM_*`, and `BARGE_IN_*` prompt/tuning values.
 
 Home Assistant exposes the active pack, readiness, library metadata, default scene, switch count, and last result/error. Library attributes intentionally omit full prompts and canned lines.
 
@@ -347,7 +353,17 @@ Scene files are limited to 32 scenes, 64 steps per scene, 500 characters per spe
 
 Scenes are lower priority than live activity. PIR detection interrupts immediately before its hold timer finishes; any incoming MQTT command interrupts and queues behind the scene; `stop`, `wait`, or the wake name interrupts speech and sound cues through barge-in; shutdown stops between the existing 20 ms audio frames. The controller always rests the jaw and restores idle eyes afterward. Night mode caps scene brightness at the reduced full-eye level, and current global volume still applies.
 
-Home Assistant exposes scene readiness, available names, active scene, current step, run count, interruption count, last result, duration, and last error. Edit `scenes.json` or replace a WAV, then restart the service so validation, speech caching, and sound preloading run again. Set `SCENES_ENABLED=0` to disable the engine while leaving conversation and manual controls unchanged.
+Home Assistant exposes scene readiness, available names, active scene, current step, run count, interruption count, last result, duration, and last error. Edit `scenes.json` or replace a WAV, then press **Reload Content** while idle so validation, speech caching, and sound preloading run again. Set `SCENES_ENABLED=0` to disable the engine while leaving conversation and manual controls unchanged.
+
+## Live content reload
+
+The **Reload Content** Home Assistant button replaces `personalities.json`, `scenes.json`, and referenced scene WAVs without restarting the service. The request is accepted only while the serialized controller is `idle` or `cooldown`; visits, speech, scenes, self-tests, and idle actions return `busy` and continue undisturbed.
+
+Reload is transactional. The runtime first loads both enabled JSON libraries into new immutable objects, requires the currently active personality to still exist, validates every personality default-scene reference, reads every referenced WAV within `SCENE_SOUND_DIR`, rebuilds the active Ollama/barge-in/idle configuration, and pre-renders all required canned speech when the streaming engine and cache are enabled. Reload JSON is capped at 1 MiB per file, decoded scene audio at 64 MiB total, and canned speech at 256 unique lines/64 KiB of text to prevent an accidental Raspberry Pi memory or warmup spike. Only after every step succeeds does the controller swap all active references together. A malformed file, missing cue, invalid cross-reference, oversized candidate, or speech-cache failure leaves the last known-good libraries and visitor behavior unchanged.
+
+PIR activity, a later queued MQTT command, or shutdown can interrupt preparation before the commit. New canned cache entries are pruned and the active content remains unchanged. Home Assistant reports `ready`, `queued`, `reloading`, `error`, `disabled`, or `stopping`, plus last result/error/time/duration, completed attempt count, and interruption count. A failed reload degrades only the `content_reload` health component; the still-active personality and scenes remain usable.
+
+Set `CONTENT_RELOAD_ENABLED=0` to remove the live operation while retaining normal startup loading. Reload changes content only: it never reads or writes visitor transcripts, conversation memory, MQTT credentials, or saved operator settings.
 
 ## Health and performance
 
