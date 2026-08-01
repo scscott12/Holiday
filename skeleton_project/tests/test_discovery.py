@@ -137,6 +137,22 @@ class DiscoveryTests(unittest.TestCase):
             "holiday/skeleton/personality/default_scene/play/set",
         )
 
+    def test_persistent_settings_state_is_discovered(self):
+        messages = dict(discovery_messages("skeleton"))
+
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/settings_state/config"]["stat_t"],
+            "holiday/skeleton/settings/state",
+        )
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/settings_last_saved/config"]["stat_t"],
+            "holiday/skeleton/settings/last_saved",
+        )
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/settings_last_error/config"]["stat_t"],
+            "holiday/skeleton/settings/last_error",
+        )
+
     def test_health_summary_and_component_attributes_are_discovered(self):
         messages = dict(discovery_messages("skeleton"))
 

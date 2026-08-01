@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Holiday Skeleton single-process runtime (Home Assistant ready)."""
-import os, time, json, queue, subprocess, random, threading, re, wave, signal
+import os, time, json, queue, subprocess, random, threading, re, wave, signal, math
 from dataclasses import replace
 from datetime import datetime
 from urllib.parse import urlsplit, urlunsplit
@@ -39,6 +39,12 @@ from holiday_skeleton.scene import (
     SceneRunner,
     load_wav_pcm16,
     resolve_sound_path,
+)
+from holiday_skeleton.settings import (
+    DayProfile,
+    OperatorSettings,
+    OperatorSettingsStore,
+    SettingsConfigError,
 )
 from holiday_skeleton.speech import PiperSpeechEngine, SpeechEngineError
 
@@ -129,6 +135,12 @@ SCENE_MAX_SECONDS = float(envs("SCENE_MAX_SECONDS","30"))
 PERSONALITIES_ENABLED = envs("PERSONALITIES_ENABLED","1").strip().lower() in ("1","true","yes","on")
 PERSONALITIES_PATH = envs("PERSONALITIES_PATH",os.path.join(os.path.dirname(__file__),"personalities.json"))
 PERSONALITY_REQUESTED = envs("PERSONALITY","").strip().lower()
+
+PERSIST_SETTINGS_ENABLED = envs("PERSIST_SETTINGS_ENABLED","1").strip().lower() in ("1","true","yes","on")
+PERSIST_SETTINGS_PATH = envs(
+    "PERSIST_SETTINGS_PATH",
+    "/var/lib/holiday-skeleton/operator-settings.json",
+)
 
 HEALTH_INTERVAL_SEC = float(envs("HEALTH_INTERVAL_SEC","30"))
 HEALTH_LATENCY_WINDOW = int(envs("HEALTH_LATENCY_WINDOW","20"))
@@ -233,6 +245,13 @@ _personality_load_error=""
 _personality_switch_count=0
 _personality_last_result="starting"
 _personality_last_error="none"
+
+_settings_store=None
+_settings_loaded=None
+_settings_state="starting"
+_settings_last_saved="never"
+_settings_last_error="none"
+_settings_save_count=0
 
 def pick_opening_line()->str:
     hr=datetime.now().hour
@@ -424,6 +443,8 @@ def _on_connect(client,userdata,flags,rc,properties=None):
         if _idle_life is not None: _publish_idle_life_ready_state()
         if _scene_library is not None: _publish_scene_ready_state()
         _publish_personality_state()
+        _publish_operator_controls()
+        _publish_settings_state()
         if _health is not None: _health.publish_now(sample=False)
     else:
         _health_set("mqtt",ComponentState.FAILED,f"connection rc={rc}")
@@ -979,22 +1000,142 @@ def publish_mqtt_discovery():
         mqtt_pub_abs(topic,"" if payload is None else json.dumps(payload),retain=True)
 
 night_mode=False; _day={"listen":None,"speak":None,"vol":None}
+
+def _publish_operator_controls():
+    mqtt_pub("eyes/dim",str(int(round(100*EYES_LISTEN_FRAC))),retain=True)
+    mqtt_pub("eyes/full",str(int(round(100*EYES_SPEAK_FRAC))),retain=True)
+    mqtt_pub("volume",str(int(round(100*VOLUME))),retain=True)
+    mqtt_pub("motion/enabled","ON" if motion_enabled else "OFF",retain=True)
+    mqtt_pub("idle_life/enabled","ON" if IDLE_LIFE_ENABLED else "OFF",retain=True)
+    mqtt_pub("night_mode","ON" if night_mode else "OFF",retain=True)
+
+def _publish_settings_state():
+    mqtt_pub("settings/state",_settings_state,retain=True)
+    mqtt_pub("settings/last_saved",_settings_last_saved,retain=True)
+    mqtt_pub("settings/last_error",_settings_last_error,retain=True)
+    mqtt_pub("settings/save_count",str(_settings_save_count),retain=True)
+
+def _day_profile():
+    if night_mode:
+        return DayProfile(
+            eyes_dim=EYES_LISTEN_FRAC if _day["listen"] is None else _day["listen"],
+            eyes_full=EYES_SPEAK_FRAC if _day["speak"] is None else _day["speak"],
+            volume=VOLUME if _day["vol"] is None else _day["vol"],
+        )
+    return DayProfile(
+        eyes_dim=EYES_LISTEN_FRAC,
+        eyes_full=EYES_SPEAK_FRAC,
+        volume=VOLUME,
+    )
+
+def _current_operator_settings():
+    return OperatorSettings(
+        personality=_personality_active_name(),
+        motion_enabled=bool(motion_enabled),
+        idle_life_enabled=bool(IDLE_LIFE_ENABLED),
+        night_mode=bool(night_mode),
+        eyes_dim=clamp(float(EYES_LISTEN_FRAC),0.0,1.0),
+        eyes_full=clamp(float(EYES_SPEAK_FRAC),0.0,1.0),
+        volume=clamp(float(VOLUME),0.0,2.0),
+        day_profile=_day_profile(),
+    )
+
+def _apply_restored_settings(settings):
+    global PERSONALITY_REQUESTED,motion_enabled,IDLE_LIFE_ENABLED,night_mode
+    global EYES_LISTEN_FRAC,EYES_SPEAK_FRAC,VOLUME,_day
+    PERSONALITY_REQUESTED=settings.personality
+    motion_enabled=settings.motion_enabled
+    IDLE_LIFE_ENABLED=settings.idle_life_enabled
+    night_mode=settings.night_mode
+    EYES_LISTEN_FRAC=settings.eyes_dim
+    EYES_SPEAK_FRAC=settings.eyes_full
+    VOLUME=settings.volume
+    _day={
+        "listen":settings.day_profile.eyes_dim if night_mode else None,
+        "speak":settings.day_profile.eyes_full if night_mode else None,
+        "vol":settings.day_profile.volume if night_mode else None,
+    }
+
+def _init_persistent_settings():
+    global _settings_store,_settings_loaded,_settings_state
+    global _settings_last_saved,_settings_last_error
+    if not PERSIST_SETTINGS_ENABLED:
+        _settings_store=None; _settings_loaded=None
+        _settings_state="disabled"; _settings_last_saved="never"; _settings_last_error="none"
+        _health_set("settings",ComponentState.DISABLED,"disabled by configuration")
+        _publish_settings_state()
+        return
+    _settings_store=OperatorSettingsStore(PERSIST_SETTINGS_PATH)
+    try:
+        settings=_settings_store.load()
+        _settings_loaded=settings
+        if settings is None:
+            _settings_state="empty"; _settings_last_saved="never"; _settings_last_error="none"
+            _health_set("settings",ComponentState.READY,"no saved operator override")
+            print(f"[settings] no saved state at {PERSIST_SETTINGS_PATH}; using configured defaults")
+        else:
+            _apply_restored_settings(settings)
+            _settings_state="restored"
+            _settings_last_saved=settings.updated_at
+            _settings_last_error="none"
+            _health_set("settings",ComponentState.READY,f"restored {settings.updated_at}")
+            print(f"[settings] restored operator state from {PERSIST_SETTINGS_PATH}")
+    except SettingsConfigError as error:
+        _settings_loaded=None
+        _settings_state="error"; _settings_last_saved="never"; _settings_last_error=str(error)[:255]
+        _health_set("settings",ComponentState.DEGRADED,str(error))
+        print(f"[settings] {error}; using configured defaults")
+    _publish_settings_state()
+
+def _persist_operator_settings():
+    global _settings_loaded,_settings_state,_settings_last_saved
+    global _settings_last_error,_settings_save_count
+    if _settings_store is None: return False
+    try:
+        saved=_settings_store.save(_current_operator_settings())
+        _settings_loaded=saved
+        _settings_state="saved"; _settings_last_saved=saved.updated_at
+        _settings_last_error="none"; _settings_save_count+=1
+        _health_set("settings",ComponentState.READY,f"saved {saved.updated_at}")
+        _publish_settings_state()
+        return True
+    except Exception as error:
+        _settings_state="error"; _settings_last_error=str(error)[:255]
+        _health_set("settings",ComponentState.DEGRADED,str(error))
+        _publish_settings_state()
+        print(f"[settings] save failed: {error}")
+        return False
+
 def _set_eyes_dim(v):
-    global EYES_LISTEN_FRAC; EYES_LISTEN_FRAC=clamp(v,0,1); eyes_listen(); mqtt_pub("eyes/dim",str(int(round(100*EYES_LISTEN_FRAC))))
+    global EYES_LISTEN_FRAC
+    if not math.isfinite(float(v)): return
+    EYES_LISTEN_FRAC=clamp(v,0,1); eyes_listen()
+    mqtt_pub("eyes/dim",str(int(round(100*EYES_LISTEN_FRAC))),retain=True)
+    _persist_operator_settings()
 def _set_eyes_full(v):
-    global EYES_SPEAK_FRAC;  EYES_SPEAK_FRAC=clamp(v,0,1); eyes_speak(); mqtt_pub("eyes/full",str(int(round(100*EYES_SPEAK_FRAC))))
+    global EYES_SPEAK_FRAC
+    if not math.isfinite(float(v)): return
+    EYES_SPEAK_FRAC=clamp(v,0,1); eyes_speak()
+    mqtt_pub("eyes/full",str(int(round(100*EYES_SPEAK_FRAC))),retain=True)
+    _persist_operator_settings()
 def _set_volume(v):
-    global VOLUME; VOLUME=clamp(v,0,2); mqtt_pub("volume",str(int(round(100*VOLUME))))
+    global VOLUME
+    if not math.isfinite(float(v)): return
+    VOLUME=clamp(v,0,2)
+    mqtt_pub("volume",str(int(round(100*VOLUME))),retain=True)
+    _persist_operator_settings()
 def _set_motion_enabled(payload):
     global motion_enabled; motion_enabled=str(payload).lower() in ("on","true","1","yes")
     if not motion_enabled: _cancel_motion_timer()
-    mqtt_pub("motion/enabled","ON" if motion_enabled else "OFF")
+    mqtt_pub("motion/enabled","ON" if motion_enabled else "OFF",retain=True)
     _publish_idle_life_ready_state()
+    _persist_operator_settings()
 def _set_idle_life_enabled(payload):
     global IDLE_LIFE_ENABLED
     IDLE_LIFE_ENABLED=str(payload).lower() in ("on","true","1","yes")
     if _idle_life is not None: _idle_life.set_enabled(IDLE_LIFE_ENABLED)
     _publish_idle_life_ready_state()
+    _persist_operator_settings()
 def _toggle_night_mode(payload):
     global night_mode,EYES_LISTEN_FRAC,EYES_SPEAK_FRAC,VOLUME,_day
     want=str(payload).lower() in ("on","true","1","yes")
@@ -1007,8 +1148,8 @@ def _toggle_night_mode(payload):
         if _day["speak"]  is not None: EYES_SPEAK_FRAC=_day["speak"]
         if _day["vol"]    is not None: VOLUME=_day["vol"]
         night_mode=False
-    mqtt_pub("night_mode","ON" if night_mode else "OFF"); mqtt_pub("volume",str(int(round(100*VOLUME))))
-    mqtt_pub("eyes/dim",str(int(round(100*EYES_LISTEN_FRAC)))); mqtt_pub("eyes/full",str(int(round(100*EYES_SPEAK_FRAC))))
+    _publish_operator_controls()
+    _persist_operator_settings()
 
 _transcript=None
 def _transcript_start():
@@ -1294,6 +1435,8 @@ def _init_personality_library():
         _health_set("personality",state,detail)
         print(f"[personality] {selected.name} active; {len(library)} packs from {PERSONALITIES_PATH}")
         if warning: print(f"[personality] {warning}; using {selected.name}")
+        if _settings_loaded is not None and _settings_loaded.personality != selected.name:
+            _persist_operator_settings()
     except PersonalityConfigError as error:
         _personality_library=None; _personality_active=None
         _personality_load_error=str(error)
@@ -1370,6 +1513,7 @@ def _switch_personality(name):
         _publish_barge_in_capability()
         _publish_idle_life_ready_state()
         _publish_personality_state()
+        _persist_operator_settings()
         print(f"[personality] switched to {pack.name}")
     except Exception as error:
         _personality_last_result="error"; _personality_last_error=str(error)[:255]
@@ -2007,6 +2151,7 @@ def main():
     signal.signal(signal.SIGINT,_signal_handler)
     signal.signal(signal.SIGTERM,_signal_handler)
     _init_health_monitor()
+    _init_persistent_settings()
     _init_personality_library()
     _do_mqtt_connect()
     _init_scene_engine()

@@ -73,9 +73,12 @@ pip install paho-mqtt
 - Copy uncompressed 16-bit PCM WAV cues below SCENE_SOUND_DIR and reference relative paths in scenes.json.
 - SCENE_MAX_SECONDS=30 is a hard safety limit; PIR, MQTT, barge-in, and shutdown interrupt sooner.
 - PERSONALITIES_ENABLED=1 loads validated character packs from PERSONALITIES_PATH.
-- PERSONALITY=pirate chooses the startup pack; Home Assistant can switch packs live while idle.
+- PERSONALITY=pirate chooses the first-run pack; Home Assistant can switch packs live while idle and the saved choice wins on later restarts.
 - A pack changes prompts, canned lines, reply bounds, voice volume, barge-in words, idle mutters, and its default scene together.
 - Pack switching is rejected while a visit, scene, speech, or idle behavior is active.
+- PERSIST_SETTINGS_ENABLED=1 restores operator controls after service/Pi restarts.
+- Only personality, switches, night mode, eye levels, and volume are saved; visitor speech and credentials are never written.
+- The packaged service owns /var/lib/holiday-skeleton and writes the state file atomically with 0600 permissions.
 - HEALTH_INTERVAL_SEC=30 publishes component health, Pi telemetry, and latency statistics without blocking audio.
 - HEALTH_LATENCY_WINDOW=20 controls the recent-turn rolling average/P95 window.
 - CPU temperature, disk use, current throttle flags, Piper availability, and Ollama are evaluated automatically.
@@ -128,3 +131,7 @@ sudo journalctl -u holiday-skeleton -f
 # Select graveyard_host in Home Assistant while idle. Confirm personality/active,
 # the cached-line count, default scene, idle mutters, wake words, and reply style
 # change without a restart. Try switching during speech and confirm the result is busy.
+# Set personality, volume, eye levels, motion/idle switches, and night mode, then
+# restart the service. Confirm each value returns and settings/state is restored.
+# Confirm /var/lib/holiday-skeleton/operator-settings.json is mode 0600 and does
+# not contain transcripts, recognized visitor text, prompts, or MQTT credentials.

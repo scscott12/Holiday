@@ -39,6 +39,10 @@ Environment="PERSONALITIES_ENABLED=1"
 Environment="PERSONALITIES_PATH=/opt/holiday-skeleton/personalities.json"
 Environment="PERSONALITY=pirate"
 
+# Persist only operator controls. The base service creates and owns this directory.
+Environment="PERSIST_SETTINGS_ENABLED=1"
+Environment="PERSIST_SETTINGS_PATH=/var/lib/holiday-skeleton/operator-settings.json"
+
 # Self-diagnostics, Pi telemetry, and rolling response-latency statistics.
 Environment="HEALTH_INTERVAL_SEC=30"
 Environment="HEALTH_LATENCY_WINDOW=20"
