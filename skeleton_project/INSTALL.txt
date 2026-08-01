@@ -54,6 +54,9 @@ pip install paho-mqtt
 - TTS_FRAME_MS=20 controls both PCM write and jaw-envelope resolution.
 - Ollama streams in the background while Piper speaks completed phrases.
 - LLM_PHRASE_MIN_CHARS / SOFT_CHARS / MAX_CHARS tune natural phrase boundaries.
+- Ollama uses /api/chat and remembers the latest LLM_MEMORY_TURNS exchanges for one visit.
+- LLM_MEMORY_TURNS=3 and LLM_CONTEXT_TOKENS=512 are the recommended Pi defaults.
+- Visit memory is cleared on goodbye/timeout and is never saved to disk.
 - EYES_INVERT=1 if your LED driver is active-low.
 - JAW_MIN_US/JAW_MAX_US to set jaw travel.
 - Eyes Dim/Full % and Volume % are "number" controls in HA with box entry.
@@ -77,3 +80,5 @@ sudo journalctl -u holiday-skeleton -f
 # Then send two Say commands. Both should use tts/engine=streaming and no /tmp WAV.
 # Trigger a conversation and compare llm/first_token, llm/first_phrase,
 # llm/first_audio, and llm/reply_time. First audio should precede reply completion.
+# Ask a follow-up that depends on the prior answer, then end the visit. The
+# llm/memory_turns sensor should increment during the visit and return to 0.

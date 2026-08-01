@@ -38,6 +38,10 @@ class DiscoveryTests(unittest.TestCase):
             messages["homeassistant/sensor/skeleton/llm_first_audio/config"]["stat_t"],
             "holiday/skeleton/llm/first_audio",
         )
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/llm_memory_turns/config"]["stat_t"],
+            "holiday/skeleton/llm/memory_turns",
+        )
 
 
 if __name__ == "__main__":

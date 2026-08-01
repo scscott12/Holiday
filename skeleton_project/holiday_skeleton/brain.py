@@ -1,4 +1,4 @@
-"""Streaming Ollama replies and low-latency phrase assembly."""
+"""Streaming Ollama chat replies, visit memory, and phrase assembly."""
 
 from __future__ import annotations
 
@@ -7,8 +7,91 @@ import queue
 import re
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
+
+
+def normalize_ollama_chat_url(url: str) -> str:
+    """Return a chat endpoint, upgrading the former generate endpoint."""
+
+    normalized = str(url).rstrip("/")
+    generate_suffix = "/api/generate"
+    if normalized.endswith(generate_suffix):
+        return normalized[:-len(generate_suffix)] + "/api/chat"
+    return normalized
+
+
+@dataclass(frozen=True)
+class ConversationTurn:
+    """One completed visitor/skeleton exchange."""
+
+    user: str
+    assistant: str
+
+
+class ConversationMemory:
+    """Bounded, in-memory chat history for one visitor session.
+
+    The opening line is kept separately so a visitor can ask a follow-up such
+    as "what do you mean?" before any completed exchange exists.  Only callers
+    explicitly invoking :meth:`remember` can commit a turn; failed or
+    interrupted generations therefore never pollute the next request.
+    """
+
+    def __init__(self, maximum_turns: int = 3, opening_line: str = "") -> None:
+        self.maximum_turns = max(0, int(maximum_turns))
+        self._turns: deque[ConversationTurn] = deque(maxlen=self.maximum_turns)
+        self._opening_line = (
+            self._clean(opening_line) if self.maximum_turns > 0 else ""
+        )
+
+    @staticmethod
+    def _clean(text: Any) -> str:
+        return re.sub(r"\s+", " ", str(text or "")).strip()
+
+    @property
+    def turn_count(self) -> int:
+        return len(self._turns)
+
+    def remember(self, user_text: str, assistant_text: str) -> bool:
+        """Commit one complete exchange, returning whether it was retained."""
+
+        user = self._clean(user_text)
+        assistant = self._clean(assistant_text)
+        if self.maximum_turns == 0 or not user or not assistant:
+            return False
+        self._turns.append(ConversationTurn(user=user, assistant=assistant))
+        return True
+
+    def remember_reply(self, user_text: str, result: Optional["ReplyResult"]) -> bool:
+        """Commit only a successful, uninterrupted Ollama response."""
+
+        if (
+            result is None
+            or result.error
+            or result.metrics.interrupted
+            or not result.text.strip()
+        ):
+            return False
+        return self.remember(user_text, result.text)
+
+    def messages(self) -> list[dict[str, str]]:
+        """Return a copy suitable for Ollama's ``messages`` field."""
+
+        messages: list[dict[str, str]] = []
+        if self._opening_line:
+            messages.append({"role": "assistant", "content": self._opening_line})
+        for turn in self._turns:
+            messages.extend((
+                {"role": "user", "content": turn.user},
+                {"role": "assistant", "content": turn.assistant},
+            ))
+        return messages
+
+    def clear(self) -> None:
+        self._turns.clear()
+        self._opening_line = ""
 
 
 @dataclass(frozen=True)
@@ -206,7 +289,12 @@ class StreamingReply(Iterator[str]):
                 if message.get("error"):
                     raise RuntimeError(str(message["error"]))
 
-                fragment = str(message.get("response") or "")
+                chat_message = message.get("message")
+                fragment = str(
+                    chat_message.get("content")
+                    if isinstance(chat_message, dict)
+                    else ""
+                )
                 if fragment:
                     now = self.clock()
                     if first_token_at is None:
@@ -298,7 +386,7 @@ class StreamingReply(Iterator[str]):
 
 
 class OllamaStreamingClient:
-    """Create streaming Ollama `/api/generate` requests."""
+    """Create streaming Ollama ``/api/chat`` requests."""
 
     def __init__(
         self,
@@ -330,11 +418,21 @@ class OllamaStreamingClient:
         self,
         prompt: str,
         stop_event: Optional[threading.Event] = None,
+        history: Optional[Iterable[dict[str, str]]] = None,
     ) -> StreamingReply:
+        messages: list[dict[str, str]] = []
+        if self.system_prompt.strip():
+            messages.append({"role": "system", "content": self.system_prompt.strip()})
+        for message in history or ():
+            role = str(message.get("role") or "").strip()
+            content = str(message.get("content") or "").strip()
+            if role in {"user", "assistant"} and content:
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": str(prompt).strip()})
+
         payload = {
             "model": self.model,
-            "prompt": prompt,
-            "system": self.system_prompt,
+            "messages": messages,
             "stream": True,
             "keep_alive": self.keep_alive,
             "options": self.options,
