@@ -25,6 +25,8 @@ class EventKind(str, Enum):
     SET_MOTION_ENABLED = "set_motion_enabled"
     SET_IDLE_LIFE_ENABLED = "set_idle_life_enabled"
     SET_NIGHT_MODE = "set_night_mode"
+    PLAY_SCENE = "play_scene"
+    STOP_SCENE = "stop_scene"
     RESTART = "restart"
     SHUTDOWN = "shutdown"
 
@@ -37,6 +39,7 @@ class RuntimeState(str, Enum):
     THINKING = "thinking"
     SPEAKING = "speaking"
     EFFECT = "effect"
+    SCENE = "scene"
     IDLE_LIFE = "idle_life"
     COOLDOWN = "cooldown"
     STOPPING = "stopping"
@@ -66,6 +69,7 @@ class SkeletonController:
         self._queue: queue.Queue[Event] = queue.Queue(maxsize=max_queue_size)
         self._stop_event = threading.Event()
         self._idle_interrupt = threading.Event()
+        self._scene_interrupt = threading.Event()
         self._pending_trigger = False
         self._pending_lock = threading.Lock()
         self._state = RuntimeState.STARTING
@@ -82,10 +86,19 @@ class SkeletonController:
     def idle_interrupt_event(self) -> threading.Event:
         return self._idle_interrupt
 
+    @property
+    def scene_interrupt_event(self) -> threading.Event:
+        return self._scene_interrupt
+
     def interrupt_idle(self) -> None:
         """Ask an in-progress idle behavior to yield without queuing work."""
 
         self._idle_interrupt.set()
+
+    def interrupt_scene(self) -> None:
+        """Ask an in-progress scene to yield without touching hardware."""
+
+        self._scene_interrupt.set()
 
     def set_state(self, state: RuntimeState) -> None:
         if state == self._state:
@@ -111,6 +124,7 @@ class SkeletonController:
             return False
 
         self.interrupt_idle()
+        self.interrupt_scene()
 
         if kind is EventKind.TRIGGER:
             with self._pending_lock:
@@ -130,6 +144,7 @@ class SkeletonController:
     def request_stop(self, source: str = "runtime") -> None:
         self._stop_event.set()
         self.interrupt_idle()
+        self.interrupt_scene()
         try:
             self._queue.put_nowait(Event(EventKind.SHUTDOWN, source=source))
         except queue.Full:
@@ -160,6 +175,14 @@ class SkeletonController:
             if event.kind is EventKind.SHUTDOWN:
                 self._queue.task_done()
                 break
+
+            if event.kind is EventKind.PLAY_SCENE:
+                # The PLAY_SCENE enqueue wakes a prior scene too. Clear that
+                # signal only when this scene reaches the head of the queue.
+                # A later queued command must still make the new scene yield.
+                self._scene_interrupt.clear()
+                if not self._queue.empty():
+                    self._scene_interrupt.set()
 
             try:
                 self._handler(event)

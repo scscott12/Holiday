@@ -95,6 +95,30 @@ class DiscoveryTests(unittest.TestCase):
             "holiday/skeleton/idle_life/interrupted",
         )
 
+    def test_scene_controls_and_progress_are_discovered(self):
+        messages = dict(discovery_messages("skeleton"))
+
+        self.assertEqual(
+            messages["homeassistant/text/skeleton/scene_play/config"]["cmd_t"],
+            "holiday/skeleton/scene/play/set",
+        )
+        self.assertEqual(
+            messages["homeassistant/button/skeleton/scene_stop/config"]["cmd_t"],
+            "holiday/skeleton/scene/stop/set",
+        )
+        self.assertEqual(
+            messages["homeassistant/binary_sensor/skeleton/scene_active/config"]["stat_t"],
+            "holiday/skeleton/scene/active",
+        )
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/scene_step/config"]["stat_t"],
+            "holiday/skeleton/scene/step",
+        )
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/scene_library/config"]["json_attr_t"],
+            "holiday/skeleton/scene/library",
+        )
+
     def test_health_summary_and_component_attributes_are_discovered(self):
         messages = dict(discovery_messages("skeleton"))
 

@@ -26,6 +26,14 @@ from holiday_skeleton.health import (
     HealthSnapshot,
     RuntimeHealthMonitor,
 )
+from holiday_skeleton.scene import (
+    SceneAction,
+    SceneConfigError,
+    SceneLibrary,
+    SceneRunner,
+    load_wav_pcm16,
+    resolve_sound_path,
+)
 from holiday_skeleton.speech import PiperSpeechEngine, SpeechEngineError
 
 def _safe_im(name, sub=None):
@@ -106,6 +114,11 @@ IDLE_EYE_PULSE_FRAC = float(envs("IDLE_EYE_PULSE_FRAC","0.10"))
 IDLE_EYE_PULSE_MS = float(envs("IDLE_EYE_PULSE_MS","180"))
 IDLE_JAW_TWITCH_FRAC = float(envs("IDLE_JAW_TWITCH_FRAC","0.14"))
 IDLE_JAW_TWITCH_MS = float(envs("IDLE_JAW_TWITCH_MS","160"))
+
+SCENES_ENABLED = envs("SCENES_ENABLED","1").strip().lower() in ("1","true","yes","on")
+SCENES_PATH = envs("SCENES_PATH",os.path.join(os.path.dirname(__file__),"scenes.json"))
+SCENE_SOUND_DIR = envs("SCENE_SOUND_DIR",os.path.join(os.path.dirname(__file__),"sounds"))
+SCENE_MAX_SECONDS = float(envs("SCENE_MAX_SECONDS","30"))
 
 HEALTH_INTERVAL_SEC = float(envs("HEALTH_INTERVAL_SEC","30"))
 HEALTH_LATENCY_WINDOW = int(envs("HEALTH_LATENCY_WINDOW","20"))
@@ -188,6 +201,17 @@ IDLE_LINES=[
 "Just resting me bones. All of them."
 ]
 
+_scene_library=None
+_scene_runner=None
+_scene_sound_cache={}
+_scene_sound_errors={}
+_scene_load_error=""
+_scene_count=0
+_scene_interrupted=0
+_scene_active=False
+_scene_current="none"
+_scene_step="none"
+
 def pick_opening_line()->str:
     hr=datetime.now().hour
     if 5<=hr<12: return random.choice(MORNING_LINES)
@@ -213,7 +237,7 @@ _try_load_prompts()
 
 def _canned_speech_lines():
     """Return each configured opening/goodbye line once, in stable order."""
-    return list(dict.fromkeys(
+    configured=list(dict.fromkeys(
         str(line).strip()
         for group in (
             MORNING_LINES,
@@ -226,6 +250,14 @@ def _canned_speech_lines():
         for line in group
         if str(line).strip()
     ))
+    if _scene_library is not None:
+        configured.extend(
+            str(step.parameters["text"])
+            for scene_name in _scene_library.names
+            for step in _scene_library.get(scene_name).steps
+            if step.action is SceneAction.SPEAK
+        )
+    return list(dict.fromkeys(configured))
 
 EXIT_RE=re.compile(r"\b(good\s?bye|bye|farewell|that'?s all|we('re| are) done|stop now|quit|exit|shut\s?down)\b",re.I)
 
@@ -307,6 +339,10 @@ def _enqueue(kind,payload=None,source="mqtt"):
 
 def _on_message(client,userdata,msg):
     t=msg.topic; p=msg.payload.decode("utf-8","ignore").strip()
+    if t.endswith("/scene/play/set"):
+        if p: _enqueue(EventKind.PLAY_SCENE,p)
+        return
+    if t.endswith("/scene/stop/set"): _enqueue(EventKind.STOP_SCENE); return
     if t.endswith("/say/set"):
         if p: _enqueue(EventKind.SAY,p)
         return
@@ -336,12 +372,13 @@ def _on_connect(client,userdata,flags,rc,properties=None):
         publish_mqtt_discovery()
         subs=["say/set","eyes/dim/set","eyes/full/set","blink/set","flicker/set","volume/set",
               "motion/trigger/set","motion/enabled/set","idle_life/enabled/set",
-              "night_mode/set","restart/set"]
+              "scene/play/set","scene/stop/set","night_mode/set","restart/set"]
         for path in subs:
             try: client.subscribe(f"{MQTT_BASE}/{path}")
             except Exception as e: print("[mqtt subscribe]",e)
         mqtt_pub("ready","ON" if _runtime_ready else "OFF")
         if _idle_life is not None: _publish_idle_life_ready_state()
+        if _scene_library is not None: _publish_scene_ready_state()
         if _health is not None: _health.publish_now(sample=False)
     else:
         _health_set("mqtt",ComponentState.FAILED,f"connection rc={rc}")
@@ -650,6 +687,9 @@ def speak_phrases_with_jaw(
                 for phrase in seen:
                     if stop_event is not None and stop_event.is_set(): break
                     _legacy_speak_with_jaw(phrase)
+            if _speech_engine is None and not allow_legacy_fallback:
+                if abort is not None: abort()
+                return barge_result
             mqtt_pub("tts/cache_hit","OFF")
             for phrase in marked:
                 if stop_event is not None and stop_event.is_set(): break
@@ -853,7 +893,9 @@ if gpiozero is not None:
         pir=gpiozero.MotionSensor(PIR_PIN,queue_len=5,sample_rate=25,threshold=0.5)
         def _pir_on():
             global motion_count; motion_count+=1
-            if controller is not None: controller.interrupt_idle()
+            if controller is not None:
+                controller.interrupt_idle()
+                controller.interrupt_scene()
             mqtt_pub("motion","ON"); mqtt_pub("motion/count",str(motion_count))
             _schedule_motion_trigger()
         def _pir_off():
@@ -963,6 +1005,13 @@ def _init_health_monitor():
     _health.set_component("mqtt",ComponentState.STARTING,"connection pending",False,publish=False)
     _health.set_component("speech",ComponentState.STARTING,"Piper warmup pending",True,publish=False)
     _health.set_component("ollama",ComponentState.STARTING,"model warmup pending",False,publish=False)
+    _health.set_component(
+        "scenes",
+        ComponentState.STARTING if SCENES_ENABLED else ComponentState.DISABLED,
+        "scene file pending" if SCENES_ENABLED else "disabled by configuration",
+        False,
+        publish=False,
+    )
     _health.set_component(
         "microphone",
         ComponentState.READY if stt_enabled and in_idx is not None else ComponentState.FAILED,
@@ -1126,6 +1175,262 @@ def _init_speech_engine():
         print(f"[TTS] warm engine unavailable; using legacy Piper process: {e}")
         _set_legacy_speech_health(str(e))
 
+def _scene_ready_state():
+    if _scene_active: return "running"
+    if not SCENES_ENABLED: return "disabled"
+    if _scene_load_error: return "error"
+    if _scene_library is None or _scene_runner is None: return "starting"
+    if len(_scene_library) == 0: return "no_scenes"
+    return "ready"
+
+def _publish_scene_ready_state():
+    mqtt_pub("scene/active","ON" if _scene_active else "OFF",retain=True)
+    mqtt_pub("scene/state",_scene_ready_state(),retain=True)
+    mqtt_pub("scene/current",_scene_current,retain=True)
+    mqtt_pub("scene/step",_scene_step,retain=True)
+    mqtt_pub("scene/count",str(_scene_count),retain=True)
+    mqtt_pub("scene/interrupted",str(_scene_interrupted),retain=True)
+    names=list(_scene_library.names) if _scene_library is not None else []
+    mqtt_pub("scene/library_count",str(len(names)),retain=True)
+    mqtt_pub(
+        "scene/library",
+        json.dumps({
+            "names":names,
+            "scenes":{
+                name:{
+                    "description":_scene_library.get(name).description,
+                    "steps":len(_scene_library.get(name).steps),
+                }
+                for name in names
+            },
+        }),
+        retain=True,
+    )
+
+def _scene_progress(scene,index,step):
+    global _scene_current,_scene_step
+    _scene_current=scene.name
+    _scene_step=f"{index}/{len(scene.steps)}:{step.action.value}"
+    mqtt_pub("scene/current",_scene_current,retain=True)
+    mqtt_pub("scene/step",_scene_step,retain=True)
+
+def _init_scene_engine():
+    global _scene_library,_scene_runner,_scene_load_error
+    if not SCENES_ENABLED:
+        _scene_library=None; _scene_runner=None; _scene_load_error=""
+        _health_set("scenes",ComponentState.DISABLED,"disabled by configuration")
+        _publish_scene_ready_state()
+        return
+    try:
+        _scene_library=SceneLibrary.load(SCENES_PATH)
+        _scene_runner=SceneRunner(
+            executor=_execute_scene_step,
+            maximum_seconds=SCENE_MAX_SECONDS,
+            progress=_scene_progress,
+        )
+        _scene_load_error=""
+        state=ComponentState.READY if len(_scene_library) else ComponentState.DISABLED
+        detail=f"{len(_scene_library)} scenes loaded" if len(_scene_library) else "no scenes configured"
+        _health_set("scenes",state,detail)
+        print(f"[scenes] {detail} from {SCENES_PATH}")
+    except SceneConfigError as e:
+        _scene_library=None; _scene_runner=None; _scene_load_error=str(e)
+        print(f"[scenes] {e}")
+        mqtt_pub("scene/last_error",str(e)[:255],retain=True)
+        _health_set("scenes",ComponentState.DEGRADED,str(e))
+    _publish_scene_ready_state()
+
+def _scene_requires_streaming_speech():
+    return bool(
+        _scene_library is not None
+        and any(
+            step.action is SceneAction.SPEAK
+            for scene_name in _scene_library.names
+            for step in _scene_library.get(scene_name).steps
+        )
+    )
+
+def _prepare_scene_sounds():
+    global _scene_sound_cache,_scene_sound_errors
+    _scene_sound_cache={}; _scene_sound_errors={}
+    if _scene_library is None: return
+    for name in _scene_library.referenced_sounds:
+        try:
+            path=resolve_sound_path(SCENE_SOUND_DIR,name)
+            if not path.is_file(): raise SceneConfigError(f"sound cue not found: {name}")
+            if _speech_engine is not None:
+                _scene_sound_cache[name]=load_wav_pcm16(
+                    path,
+                    _speech_engine.sample_rate,
+                    maximum_seconds=SCENE_MAX_SECONDS,
+                )
+        except Exception as e:
+            _scene_sound_errors[name]=str(e)
+            print(f"[scenes] sound {name!r} unavailable: {e}")
+    scene_speech_requires_streaming=_scene_requires_streaming_speech()
+    limitations=[]
+    if scene_speech_requires_streaming and _speech_engine is None:
+        limitations.append("scene speech unavailable on legacy Piper")
+    if _scene_sound_errors:
+        limitations.append(f"{len(_scene_sound_errors)} sound cue errors")
+    if limitations:
+        detail=f"{len(_scene_library)} scenes; {'; '.join(limitations)}"
+        _health_set("scenes",ComponentState.DEGRADED,detail)
+        errors=list(_scene_sound_errors.values())
+        if scene_speech_requires_streaming and _speech_engine is None:
+            errors.insert(0,"scene speech requires streaming Piper")
+        mqtt_pub("scene/last_error","; ".join(errors)[:255],retain=True)
+    elif len(_scene_library):
+        detail=f"{len(_scene_library)} scenes ready; {len(_scene_sound_cache)} cues preloaded"
+        _health_set("scenes",ComponentState.READY,detail)
+
+def _scene_eye_level(level):
+    level=clamp(float(level),0.0,1.0)
+    return min(level,clamp(EYES_SPEAK_FRAC,0.0,1.0)) if night_mode else level
+
+def _play_legacy_scene_sound(path,stop_signal,animate_jaw):
+    try:
+        process=subprocess.Popen(
+            ["aplay","-q",str(path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as e:
+        raise RuntimeError(f"cannot start sound cue: {e}") from e
+    envelope=jaw_env_from_wav(str(path)) if animate_jaw else None
+    position=0
+    interrupted=False
+    try:
+        while process.poll() is None:
+            if stop_signal.wait(0.02):
+                interrupted=True
+                process.terminate()
+                break
+            if envelope is not None and position < envelope.size:
+                level=float(envelope[position]); position+=1
+                _jaw_set(JAW_REST_FRAC+(JAW_MAX_FRAC-JAW_REST_FRAC)*level)
+        try: process.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            process.kill(); process.wait(timeout=0.5)
+        if not interrupted and process.returncode:
+            raise RuntimeError(f"aplay exited with status {process.returncode}")
+        return interrupted
+    finally:
+        _jaw_set(JAW_REST_FRAC)
+
+def _play_scene_sound(parameters,stop_signal):
+    name=str(parameters["file"])
+    if name in _scene_sound_errors:
+        raise RuntimeError(_scene_sound_errors[name])
+    path=resolve_sound_path(SCENE_SOUND_DIR,name)
+    if _speech_engine is None:
+        return _play_legacy_scene_sound(path,stop_signal,bool(parameters["jaw"]))
+    pcm=_scene_sound_cache.get(name)
+    if pcm is None:
+        pcm=load_wav_pcm16(path,_speech_engine.sample_rate,SCENE_MAX_SECONDS)
+        _scene_sound_cache[name]=pcm
+    monitor=_start_barge_in_monitor()
+    try:
+        combined=AnyStopEvent(
+            stop_signal,
+            monitor.interrupt_event if monitor is not None else None,
+        )
+        metrics=_speech_engine.play_pcm16(
+            pcm,
+            stop_event=combined,
+            animate_jaw=bool(parameters["jaw"]),
+            volume_multiplier=float(parameters["volume"]),
+        )
+    finally:
+        barge_result=_finish_barge_in_monitor(monitor) if monitor is not None else None
+    return bool(metrics.interrupted or barge_result is not None)
+
+def _execute_scene_step(step,stop_signal):
+    parameters=step.parameters
+    if step.action is SceneAction.SPEAK:
+        if _speech_engine is None:
+            raise RuntimeError("scene speech requires the interruptible streaming Piper path")
+        result=speak_with_jaw(
+            str(parameters["text"]),
+            stop_event=stop_signal,
+            allow_legacy_fallback=False,
+        )
+        return bool(stop_signal.is_set() or result is not None)
+    if step.action is SceneAction.EYES:
+        eyes_set(_scene_eye_level(parameters["level"]))
+        duration=float(parameters["duration"])
+        return stop_signal.wait(duration) if duration > 0 else False
+    if step.action is SceneAction.BLINK:
+        half=float(parameters["period"])/2.0
+        for _ in range(int(parameters["count"])):
+            eyes_set(_scene_eye_level(parameters["high"]))
+            if stop_signal.wait(half): return True
+            eyes_set(_scene_eye_level(parameters["low"]))
+            if stop_signal.wait(half): return True
+        return False
+    if step.action is SceneAction.FLICKER:
+        end=time.monotonic()+float(parameters["duration"])
+        while time.monotonic()<end:
+            level=float(parameters["base"])+random.random()*float(parameters["span"])
+            eyes_set(_scene_eye_level(level))
+            if stop_signal.wait(min(float(parameters["step"]),max(0.0,end-time.monotonic()))):
+                return True
+        return False
+    if step.action is SceneAction.JAW:
+        amount=float(parameters["level"])
+        _jaw_set(JAW_REST_FRAC+(JAW_MAX_FRAC-JAW_REST_FRAC)*amount)
+        interrupted=stop_signal.wait(float(parameters["duration"]))
+        _jaw_set(JAW_REST_FRAC)
+        return interrupted
+    if step.action is SceneAction.SOUND:
+        return _play_scene_sound(parameters,stop_signal)
+    raise RuntimeError(f"unsupported scene action: {step.action.value}")
+
+def _run_scene(name):
+    global _scene_count,_scene_interrupted,_scene_active,_scene_current,_scene_step
+    if _scene_library is None or _scene_runner is None:
+        error=_scene_load_error or "scene engine is not ready"
+        mqtt_pub("scene/last_result","error",retain=True)
+        mqtt_pub("scene/last_error",error[:255],retain=True)
+        return
+    scene=_scene_library.get(name)
+    if scene is None:
+        available=", ".join(_scene_library.names) or "none"
+        error=f"unknown scene {str(name)!r}; available: {available}"
+        mqtt_pub("scene/last_result","error",retain=True)
+        mqtt_pub("scene/last_error",error[:255],retain=True)
+        return
+
+    _scene_count+=1
+    _scene_active=True; _scene_current=scene.name; _scene_step="starting"
+    _publish_scene_ready_state()
+    controller.set_state(RuntimeState.SCENE)
+    try:
+        result=_scene_runner.run(scene,controller.scene_interrupt_event)
+    finally:
+        _jaw_set(JAW_REST_FRAC)
+        eyes_idle()
+        _scene_active=False; _scene_current="none"; _scene_step="none"
+
+    mqtt_pub("scene/last_result",result.outcome,retain=True)
+    mqtt_pub("scene/last_duration",f"{result.duration_seconds:.3f}",retain=True)
+    if result.interrupted:
+        _scene_interrupted+=1
+        mqtt_pub("scene/interrupted",str(_scene_interrupted),retain=True)
+    if result.error:
+        mqtt_pub("scene/last_error",result.error[:255],retain=True)
+        _health_set("scenes",ComponentState.DEGRADED,f"{scene.name}: {result.error}")
+    elif result.timed_out:
+        message=f"{scene.name} exceeded {SCENE_MAX_SECONDS:g}s limit"
+        mqtt_pub("scene/last_error",message,retain=True)
+        _health_set("scenes",ComponentState.DEGRADED,message)
+    elif not _scene_sound_errors and not (
+        _scene_requires_streaming_speech() and _speech_engine is None
+    ):
+        mqtt_pub("scene/last_error","none",retain=True)
+        _health_set("scenes",ComponentState.READY,f"{len(_scene_library)} scenes ready")
+    _publish_scene_ready_state()
+
 def _idle_life_ready_state():
     if _idle_life is None: return "starting"
     if not _idle_life.enabled: return "disabled"
@@ -1232,7 +1537,7 @@ def _runtime_state_changed(state):
         eyes_speak()
     elif state in (RuntimeState.LISTENING,RuntimeState.THINKING):
         eyes_listen()
-    elif state in (RuntimeState.EFFECT,RuntimeState.IDLE_LIFE):
+    elif state in (RuntimeState.EFFECT,RuntimeState.SCENE,RuntimeState.IDLE_LIFE):
         return
     else:
         eyes_idle()
@@ -1304,6 +1609,10 @@ def _manual_trigger():
 def _handle_event(event):
     if event.kind is EventKind.TRIGGER:
         _manual_trigger()
+    elif event.kind is EventKind.PLAY_SCENE:
+        _run_scene(event.payload)
+    elif event.kind is EventKind.STOP_SCENE:
+        _publish_scene_ready_state()
     elif event.kind is EventKind.SAY:
         _transcript_start()
         try:
@@ -1363,6 +1672,10 @@ def _cleanup():
     except Exception: pass
     try: mqtt_pub("idle_life/state","stopping",retain=True)
     except Exception: pass
+    try: mqtt_pub("scene/active","OFF",retain=True)
+    except Exception: pass
+    try: mqtt_pub("scene/state","stopping",retain=True)
+    except Exception: pass
     try: mqtt_pub("availability","offline",retain=True)
     except Exception: pass
     try: _jaw_set(JAW_REST_FRAC)
@@ -1392,7 +1705,9 @@ def main():
     signal.signal(signal.SIGTERM,_signal_handler)
     _init_health_monitor()
     _do_mqtt_connect()
+    _init_scene_engine()
     _init_speech_engine()
+    _prepare_scene_sounds()
     _init_llm_client()
     _warm_ollama()
     _publish_barge_in_capability()

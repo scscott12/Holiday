@@ -14,6 +14,8 @@ views:
           - button.skeleton_blink
           - button.skeleton_flicker
           - text.skeleton_say
+          - text.skeleton_play_scene
+          - button.skeleton_stop_scene
       - type: entities
         title: Status
         entities:
@@ -29,6 +31,16 @@ views:
           - sensor.skeleton_idle_life_last_action
           - sensor.skeleton_idle_life_count
           - sensor.skeleton_idle_life_interrupted
+          - binary_sensor.skeleton_scene_active
+          - sensor.skeleton_scene_state
+          - sensor.skeleton_current_scene
+          - sensor.skeleton_scene_step
+          - sensor.skeleton_scene_library
+          - sensor.skeleton_scene_count
+          - sensor.skeleton_scenes_interrupted
+          - sensor.skeleton_scene_last_result
+          - sensor.skeleton_scene_last_duration
+          - sensor.skeleton_scene_last_error
           - sensor.skeleton_status
           - sensor.skeleton_reply_time
           - sensor.skeleton_llm_first_token
