@@ -11,6 +11,7 @@ sudo mkdir -p /opt/holiday-skeleton
 sudo cp skeleton_all_in_one_mqtt.py /opt/holiday-skeleton/
 sudo cp -r holiday_skeleton /opt/holiday-skeleton/
 sudo cp scenes.json /opt/holiday-skeleton/
+sudo cp personalities.json /opt/holiday-skeleton/
 sudo mkdir -p /opt/holiday-skeleton/sounds
 cd /opt/holiday-skeleton
 sudo python3 -m venv venv
@@ -71,6 +72,10 @@ pip install paho-mqtt
 - SCENES_ENABLED=1 loads validated speech, pause, eye, jaw, and sound-cue sequences from SCENES_PATH.
 - Copy uncompressed 16-bit PCM WAV cues below SCENE_SOUND_DIR and reference relative paths in scenes.json.
 - SCENE_MAX_SECONDS=30 is a hard safety limit; PIR, MQTT, barge-in, and shutdown interrupt sooner.
+- PERSONALITIES_ENABLED=1 loads validated character packs from PERSONALITIES_PATH.
+- PERSONALITY=pirate chooses the startup pack; Home Assistant can switch packs live while idle.
+- A pack changes prompts, canned lines, reply bounds, voice volume, barge-in words, idle mutters, and its default scene together.
+- Pack switching is rejected while a visit, scene, speech, or idle behavior is active.
 - HEALTH_INTERVAL_SEC=30 publishes component health, Pi telemetry, and latency statistics without blocking audio.
 - HEALTH_LATENCY_WINDOW=20 controls the recent-turn rolling average/P95 window.
 - CPU temperature, disk use, current throttle flags, Piper availability, and Ollama are evaluated automatically.
@@ -89,6 +94,7 @@ python3 -m compileall -q .
 sudo cp skeleton_all_in_one_mqtt.py /opt/holiday-skeleton/
 sudo cp -r holiday_skeleton /opt/holiday-skeleton/
 sudo cp -n scenes.json /opt/holiday-skeleton/
+sudo cp -n personalities.json /opt/holiday-skeleton/
 sudo mkdir -p /opt/holiday-skeleton/sounds
 sudo cp requirements.txt /opt/holiday-skeleton/
 sudo /opt/holiday-skeleton/venv/bin/pip install -r /opt/holiday-skeleton/requirements.txt
@@ -97,7 +103,7 @@ sudo journalctl -u holiday-skeleton -f
 
 # Expected once during startup:
 # [TTS] Piper voice warm and output stream ready in ...s
-# [TTS cache] 22/22 canned lines ready in ...s (... KiB) with default prompts/scenes
+# [TTS cache] 15/15 canned lines ready in ...s (... KiB) with the default pirate pack/scenes
 # Then send two Say commands. Both should use tts/engine=streaming and no /tmp WAV.
 # Trigger motion twice. Each configured opener should set tts/cache_hit=ON and
 # greeting_first_audio should be near zero. Dynamic Say text should report OFF.
@@ -119,3 +125,6 @@ sudo journalctl -u holiday-skeleton -f
 # Enter "awakening" in the Play Scene entity. Confirm scene/current and
 # scene/step advance, then press Stop Scene during a second run and confirm the
 # jaw rests, eyes return to idle, and scene/last_result becomes interrupted.
+# Select graveyard_host in Home Assistant while idle. Confirm personality/active,
+# the cached-line count, default scene, idle mutters, wake words, and reply style
+# change without a restart. Try switching during speech and confirm the result is busy.

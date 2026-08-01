@@ -11,6 +11,8 @@ views:
           - number.skeleton_eyes_dim
           - number.skeleton_eyes_full
           - number.skeleton_volume
+          - select.skeleton_personality
+          - button.skeleton_play_personality_scene
           - button.skeleton_blink
           - button.skeleton_flicker
           - text.skeleton_say
@@ -41,6 +43,12 @@ views:
           - sensor.skeleton_scene_last_result
           - sensor.skeleton_scene_last_duration
           - sensor.skeleton_scene_last_error
+          - sensor.skeleton_personality_state
+          - sensor.skeleton_personality_library
+          - sensor.skeleton_personality_default_scene
+          - sensor.skeleton_personality_last_result
+          - sensor.skeleton_personality_last_error
+          - sensor.skeleton_personality_switch_count
           - sensor.skeleton_status
           - sensor.skeleton_reply_time
           - sensor.skeleton_llm_first_token

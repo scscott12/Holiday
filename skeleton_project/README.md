@@ -1,6 +1,6 @@
 # Holiday Skeleton (PCA9685 + MQTT + Home Assistant)
 
-Single-process animatronic skeleton that **listens → thinks → speaks**, with **moving jaw**, **PWM eyes**, and configurable multi-step scenes via PCA9685, offline **Vosk** STT, **Piper** TTS, and optional **Ollama** LLM quips. Auto-publishes **MQTT discovery** so Home Assistant gets clean controls out-of-the-box.
+Single-process animatronic skeleton that **listens → thinks → speaks**, with **moving jaw**, **PWM eyes**, hot-swappable personality packs, and configurable multi-step scenes via PCA9685, offline **Vosk** STT, **Piper** TTS, and optional **Ollama** LLM quips. Auto-publishes **MQTT discovery** so Home Assistant gets clean controls out-of-the-box.
 
 The service uses a serialized event controller: MQTT and PIR callbacks only enqueue work, while one controller owns speech, listening, eyes, and jaw movement. This prevents overlapping conversations and hardware races without adding inter-process latency.
 
@@ -15,6 +15,7 @@ holiday_skeleton/
   brain.py                   Ollama stream producer and phrase assembly
   health.py                  health aggregation and Pi telemetry
   idle_life.py               sparse idle-action scheduler
+  personality.py             validated character packs and bounded settings
   scene.py                   validated scene files, cue loading, and bounded runner
   speech.py                  warm Piper voice, PCM playback, and jaw envelope
   discovery.py               shared Home Assistant MQTT definitions
@@ -59,6 +60,8 @@ views:
           - entity: number.skeleton_eyes_dim
           - entity: number.skeleton_eyes_full
           - entity: number.skeleton_volume
+          - entity: select.skeleton_personality
+          - entity: button.skeleton_play_personality_scene
           - entity: button.skeleton_blink
           - entity: button.skeleton_flicker
           - entity: text.skeleton_say
@@ -76,6 +79,8 @@ views:
           - sensor.skeleton_scene_state
           - sensor.skeleton_current_scene
           - sensor.skeleton_scene_step
+          - sensor.skeleton_personality_state
+          - sensor.skeleton_personality_default_scene
           - sensor.skeleton_status
           - sensor.skeleton_reply_time
           - sensor.skeleton_llm_first_token
@@ -136,6 +141,9 @@ Environment="SCENES_ENABLED=1"
 Environment="SCENES_PATH=/opt/holiday-skeleton/scenes.json"
 Environment="SCENE_SOUND_DIR=/opt/holiday-skeleton/sounds"
 Environment="SCENE_MAX_SECONDS=30"
+Environment="PERSONALITIES_ENABLED=1"
+Environment="PERSONALITIES_PATH=/opt/holiday-skeleton/personalities.json"
+Environment="PERSONALITY=pirate"
 Environment="HEALTH_INTERVAL_SEC=30"
 Environment="HEALTH_LATENCY_WINDOW=20"
 Environment="HEALTH_TEMP_WARN_C=75"
@@ -174,7 +182,7 @@ The service loads `PIPER_MODEL` once during startup, runs one silent inference t
 
 The jaw follows 20 ms RMS audio frames as those same frames are written to the speaker. Change `TTS_FRAME_MS` only if the servo needs slower movement; 15–25 ms is the useful range. `AUDIO_OUTPUT_DEVICE` may be a sounddevice device index or a unique device-name substring. Leave it empty to use the system default.
 
-With `TTS_CANNED_CACHE=1` (the default), every configured morning, afternoon, evening, night, goodbye, idle-mutter, and scene-speech line is synthesized silently during service startup. The raw PCM and jaw envelope stay in memory, so a motion greeting, goodbye, idle mutter, or scene line can write its first frame immediately without invoking Piper again. Dynamic Home Assistant text and Ollama phrases still use live streaming synthesis. Cache keys normalize whitespace, and the cache belongs only to the currently loaded voice instance, so restarting after a model, voice configuration, frame-size, prompt, or scene change cannot replay stale audio. Set `TTS_CANNED_CACHE=0` if startup time matters more than instant canned lines.
+With `TTS_CANNED_CACHE=1` (the default), every morning, afternoon, evening, night, goodbye, and idle-mutter line in the active personality plus every scene-speech line is synthesized silently during service startup. The raw PCM and jaw envelope stay in memory, so a motion greeting, goodbye, idle mutter, or scene line can write its first frame immediately without invoking Piper again. Dynamic Home Assistant text and Ollama phrases still use live streaming synthesis. A live personality switch pre-renders the incoming pack before activation and prunes lines used only by the previous pack, preventing repeated switches from growing RAM indefinitely. Cache keys normalize whitespace, and the cache belongs only to the currently loaded voice instance. Set `TTS_CANNED_CACHE=0` if startup time matters more than instant canned lines.
 
 Home Assistant reports:
 
@@ -204,7 +212,7 @@ Startup should log both `Piper voice warm and output stream ready` and a `[TTS c
 
 Ollama now returns newline-delimited streaming chunks. A background producer keeps reading those chunks while the controller speaks completed clauses through the warm Piper engine. This overlaps the remaining LLM generation with audio playback without giving a background thread access to the eyes, jaw, microphone, or speaker.
 
-Phrase boundaries prefer sentence punctuation, then commas/semicolons after `LLM_PHRASE_SOFT_CHARS`, and finally a word boundary at `LLM_PHRASE_MAX_CHARS`. The defaults are intentionally conservative so speech sounds natural. Lower the soft/max values slightly if first audio is still slow; raise them if the voice sounds too fragmented. Keep `MIN <= SOFT <= MAX`.
+Phrase boundaries prefer sentence punctuation, then commas/semicolons after the configured soft boundary, and finally a word boundary at the maximum. The defaults are intentionally conservative so speech sounds natural. With personality packs enabled, tune `reply.phrase_minimum`, `phrase_soft`, and `phrase_maximum` in each pack; the `LLM_PHRASE_*` environment values remain the legacy fallback. Lower soft/max slightly if first audio is still slow, raise them if the voice sounds fragmented, and keep `minimum <= soft <= maximum`.
 
 Home Assistant reports each layer separately:
 
@@ -220,7 +228,7 @@ The full generated response is retained for the transcript even though it is spo
 
 Ollama replies now use `/api/chat`. During one motion-triggered visit, each request includes the skeleton's system prompt, its opening line, and up to the latest `LLM_MEMORY_TURNS` completed visitor/skeleton exchanges. This lets a visitor naturally ask follow-ups such as “what do you mean?” without adding a database or another service.
 
-The default is three exchanges with a 512-token context window. Set `LLM_MEMORY_TURNS=0` to disable history, or raise `LLM_CONTEXT_TOKENS` if you deliberately configure longer prompts and replies. More context consumes additional Pi memory and prompt-processing time, so three short turns is the recommended balance for this prop.
+The default pirate pack uses three exchanges with a 512-token context window. Change `reply.memory_turns` and `reply.context_tokens` per pack; `LLM_MEMORY_TURNS` and `LLM_CONTEXT_TOKENS` are used only in legacy mode. More context consumes additional Pi memory and prompt-processing time, so three short turns is the recommended balance for this prop.
 
 Only successful, uninterrupted Ollama replies enter memory. The entire session is cleared on goodbye, listening timeout, shutdown, or completion of the visit; it is never written to disk or shared with the next visitor. Home Assistant's `sensor.skeleton_memory_turns` shows the number of retained exchanges during the active visit and returns to zero when it ends.
 
@@ -236,7 +244,7 @@ While the streaming Piper engine is speaking, a second command-only Vosk recogni
 
 The recognizer requires the same command in two consecutive partial results by default, uses a higher energy gate than normal conversation, and ignores a command when that exact wording appears in the phrase currently coming from the speaker. These safeguards reduce self-echo false triggers without adding a cloud service or a second speech model.
 
-Set `BARGE_IN_ENABLED=0` to disable the feature. Command and wake-word lists are comma-separated. `BARGE_IN_WAKE_WORDS` defaults to `DEVICE_NAME`, so change it if the character has a more natural spoken name. If nearby speaker audio causes false interruptions, first raise `BARGE_IN_ENERGY_GATE` in increments of 50. Set `BARGE_IN_REQUIRE_WAKE_WORD=1` to reject bare commands and require forms such as `skeleton stop`; the wake name by itself still returns to listening.
+Set `BARGE_IN_ENABLED=0` to disable the feature. Each personality supplies its command lists, wake words, and wake-required mode; the comma-separated `BARGE_IN_*` values are the legacy fallback. If nearby speaker audio causes false interruptions, first raise `BARGE_IN_ENERGY_GATE` in increments of 50. Requiring a wake word rejects bare commands and accepts forms such as `skeleton stop`; the wake name by itself still returns to listening.
 
 Barge-in requires the warm streaming Piper path because the legacy WAV player cannot be stopped safely mid-file. Home Assistant reports `ready`, `listening`, `disabled`, `legacy_tts`, `no_microphone`, or `error`, along with the last command, selected action, detection latency, and count. A microphone/full-duplex audio error affects only barge-in; normal speech continues and the next utterance retries the monitor.
 
@@ -253,9 +261,27 @@ Configuration:
 - `IDLE_MUTTER_CHANCE`: probability from `0.0` to `1.0` that a due action speaks.
 - `IDLE_EYE_PULSE_FRAC` / `IDLE_EYE_PULSE_MS`: brightness and duration of the subtle eye pulse. Night mode caps it at the dim-eye level.
 - `IDLE_JAW_TWITCH_FRAC` / `IDLE_JAW_TWITCH_MS`: portion of available jaw travel and hold duration.
-- `IDLE_LINES`: optional prompt-file list of canned mutters; these join the startup TTS cache.
+- `idle_lines` in the active personality: canned mutters that join the TTS cache. `IDLE_LINES` in `prompts.json` is the legacy fallback.
 
 Turning off `switch.skeleton_motion_enabled` disarms idle life as well as visitor triggering. `switch.skeleton_idle_life_enabled` disables only ambient behaviors. Home Assistant reports `ready`, `running`, `disabled`, `disarmed`, or `stopping`, plus the latest action, total action count, and number interrupted by higher-priority activity.
+
+## Personality packs
+
+`personalities.json` packages the settings that make one character feel internally consistent:
+
+- system prompt, time-of-day greetings, goodbyes, idle mutters, and local fallback line;
+- memory/context size, maximum reply length, sampling settings, and phrase boundaries;
+- spoken-volume multiplier layered on the current Home Assistant/night-mode volume;
+- stop, listen, and wake-word grammar for command-only barge-in;
+- one default scene available through the **Play Personality Scene** button.
+
+The packaged library includes `pirate`, `graveyard_host`, and `silent_watcher`. Set `PERSONALITY` for the startup selection or use `select.skeleton_personality` while the service is running. Switching requires no restart, but it is accepted only while the controller is `idle` or `cooldown`; a request during a greeting, visit, response, scene, or idle behavior returns `busy` and leaves the active pack untouched.
+
+An accepted switch prepares the incoming Ollama client, barge-in grammar, idle scheduler, and canned-speech cache before changing the active pack. Conversation memory is already empty at this boundary and is explicitly reported as zero. Invalid settings, unknown pack names, unsafe scene names, and missing named scenes cannot partially replace a running personality during a live switch. Startup cross-checks every pack's default scene and reports any mismatch as degraded configuration. If the personality file cannot load at startup, the legacy built-in prompt and optional `prompts.json` override remain available while health reports the configuration error.
+
+Files are limited to 12 packs. Prompts, line counts and lengths, memory/context values, sampling ranges, phrase boundaries, volume multipliers, command lists, and scene identifiers are all bounded during loading. Edit `personalities.json` and restart once to reload the library itself; changing between already-loaded packs is immediate. With packs enabled, their settings take precedence over the legacy `SYSTEM_PROMPT`, `IDLE_LINES`, `LLM_*`, and `BARGE_IN_*` prompt/tuning values.
+
+Home Assistant exposes the active pack, readiness, library metadata, default scene, switch count, and last result/error. Library attributes intentionally omit full prompts and canned lines.
 
 ## Scene engine
 
@@ -288,7 +314,7 @@ Home Assistant exposes scene readiness, available names, active scene, current s
 
 ## Health and performance
 
-The runtime performs explicit startup checks for MQTT, the Vosk microphone path, Piper, Ollama, the PIR, and PCA9685 animation hardware. It reports one of five overall states:
+The runtime performs explicit startup checks for MQTT, the personality library, the Vosk microphone path, Piper, Ollama, the PIR, and PCA9685 animation hardware. It reports one of five overall states:
 
 - `healthy`: all enabled paths are ready.
 - `degraded`: the skeleton remains usable, but an optional path or preferred fast path is unavailable. Examples include no PIR with MQTT trigger still working, Ollama using the local spoken fallback, or legacy Piper replacing streaming audio.

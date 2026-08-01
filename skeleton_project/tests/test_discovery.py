@@ -119,6 +119,24 @@ class DiscoveryTests(unittest.TestCase):
             "holiday/skeleton/scene/library",
         )
 
+    def test_personality_select_library_and_default_scene_are_discovered(self):
+        messages = dict(discovery_messages(
+            "skeleton", ("pirate", "graveyard_host", "pirate")
+        ))
+
+        selector = messages["homeassistant/select/skeleton/personality/config"]
+        self.assertEqual(selector["cmd_t"], "holiday/skeleton/personality/set")
+        self.assertEqual(selector["stat_t"], "holiday/skeleton/personality/active")
+        self.assertEqual(selector["options"], ["pirate", "graveyard_host"])
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/personality_library/config"]["json_attr_t"],
+            "holiday/skeleton/personality/library",
+        )
+        self.assertEqual(
+            messages["homeassistant/button/skeleton/personality_default_scene/config"]["cmd_t"],
+            "holiday/skeleton/personality/default_scene/play/set",
+        )
+
     def test_health_summary_and_component_attributes_are_discovered(self):
         messages = dict(discovery_messages("skeleton"))
 

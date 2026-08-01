@@ -33,6 +33,12 @@ Environment="SCENES_PATH=/opt/holiday-skeleton/scenes.json"
 Environment="SCENE_SOUND_DIR=/opt/holiday-skeleton/sounds"
 Environment="SCENE_MAX_SECONDS=30"
 
+# Validated character bundles. PERSONALITY may be pirate, graveyard_host, or
+# silent_watcher in the packaged file; Home Assistant can switch it while idle.
+Environment="PERSONALITIES_ENABLED=1"
+Environment="PERSONALITIES_PATH=/opt/holiday-skeleton/personalities.json"
+Environment="PERSONALITY=pirate"
+
 # Self-diagnostics, Pi telemetry, and rolling response-latency statistics.
 Environment="HEALTH_INTERVAL_SEC=30"
 Environment="HEALTH_LATENCY_WINDOW=20"
@@ -49,6 +55,7 @@ Environment="MAX_UTTERANCE_SEC=12.0"
 # Command-only Vosk monitor active while Piper speaks. "stop"/"quiet" end the
 # visit; "wait" or the wake name interrupts and returns to visitor listening.
 Environment="BARGE_IN_ENABLED=1"
+# These command/name values are the legacy fallback; enabled packs carry their own.
 Environment="BARGE_IN_STOP_COMMANDS=stop,quiet"
 Environment="BARGE_IN_LISTEN_COMMANDS=wait"
 Environment="BARGE_IN_WAKE_WORDS=skeleton"
@@ -66,7 +73,8 @@ Environment="TTS_FRAME_MS=20"
 # Pre-render configured opening/goodbye/idle/scene lines during startup.
 Environment="TTS_CANNED_CACHE=1"
 
-# Streamed Ollama text is split on punctuation, then bounded by character count.
+# Legacy prompt settings used when personality packs are disabled or unavailable.
+# Active packs carry their own reply and phrase bounds.
 Environment="LLM_PHRASE_MIN_CHARS=12"
 Environment="LLM_PHRASE_SOFT_CHARS=36"
 Environment="LLM_PHRASE_MAX_CHARS=72"

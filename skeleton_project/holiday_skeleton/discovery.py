@@ -6,15 +6,21 @@ paths cannot silently drift apart.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 DiscoveryMessage = Tuple[str, Optional[Dict[str, Any]]]
 
 
-def discovery_messages(device_name: str) -> List[DiscoveryMessage]:
+def discovery_messages(
+    device_name: str,
+    personality_names: Iterable[str] = (),
+) -> List[DiscoveryMessage]:
     base = f"holiday/{device_name}"
     title = device_name.capitalize()
+    personality_options = list(dict.fromkeys(
+        str(name).strip().lower() for name in personality_names if str(name).strip()
+    )) or ["legacy"]
     device = {
         "identifiers": [f"holiday_{device_name}"],
         "name": title,
@@ -149,6 +155,37 @@ def discovery_messages(device_name: str) -> List[DiscoveryMessage]:
         "uniq_id": f"holiday_{device_name}_scene_last_duration",
         "stat_t": f"{base}/scene/last_duration",
         "unit_of_measurement": "s",
+    })
+    add("sensor", "personality_state", {
+        "name": f"{title} Personality State",
+        "uniq_id": f"holiday_{device_name}_personality_state",
+        "stat_t": f"{base}/personality/state",
+    })
+    add("sensor", "personality_library", {
+        "name": f"{title} Personality Library",
+        "uniq_id": f"holiday_{device_name}_personality_library",
+        "stat_t": f"{base}/personality/library_count",
+        "json_attr_t": f"{base}/personality/library",
+    })
+    add("sensor", "personality_default_scene", {
+        "name": f"{title} Personality Default Scene",
+        "uniq_id": f"holiday_{device_name}_personality_default_scene",
+        "stat_t": f"{base}/personality/default_scene",
+    })
+    add("sensor", "personality_last_result", {
+        "name": f"{title} Personality Last Result",
+        "uniq_id": f"holiday_{device_name}_personality_last_result",
+        "stat_t": f"{base}/personality/last_result",
+    })
+    add("sensor", "personality_last_error", {
+        "name": f"{title} Personality Last Error",
+        "uniq_id": f"holiday_{device_name}_personality_last_error",
+        "stat_t": f"{base}/personality/last_error",
+    })
+    add("sensor", "personality_switch_count", {
+        "name": f"{title} Personality Switch Count",
+        "uniq_id": f"holiday_{device_name}_personality_switch_count",
+        "stat_t": f"{base}/personality/switch_count",
     })
     add("binary_sensor", "ready", {
         "name": f"{title} Ready", "uniq_id": f"holiday_{device_name}_ready",
@@ -374,6 +411,13 @@ def discovery_messages(device_name: str) -> List[DiscoveryMessage]:
         "cmd_t": f"{base}/night_mode/set", "stat_t": f"{base}/night_mode",
         "pl_on": "ON", "pl_off": "OFF",
     })
+    add("select", "personality", {
+        "name": f"{title} Personality",
+        "uniq_id": f"holiday_{device_name}_personality",
+        "cmd_t": f"{base}/personality/set",
+        "stat_t": f"{base}/personality/active",
+        "options": personality_options,
+    })
 
     # Clear the retained legacy button. MQTT buttons publish "PRESS", not text.
     messages.append((f"homeassistant/button/{device_name}/say/config", None))
@@ -390,6 +434,11 @@ def discovery_messages(device_name: str) -> List[DiscoveryMessage]:
         "name": f"{title} Stop Scene",
         "uniq_id": f"holiday_{device_name}_scene_stop",
         "cmd_t": f"{base}/scene/stop/set",
+    })
+    add("button", "personality_default_scene", {
+        "name": f"{title} Play Personality Scene",
+        "uniq_id": f"holiday_{device_name}_personality_default_scene_play",
+        "cmd_t": f"{base}/personality/default_scene/play/set",
     })
     add("button", "blink", {
         "name": f"{title} Blink", "uniq_id": f"holiday_{device_name}_blink_btn",
