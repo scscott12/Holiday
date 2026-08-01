@@ -1,0 +1,274 @@
+"""Warm Piper synthesis with direct PCM playback and live jaw movement."""
+
+from __future__ import annotations
+
+import threading
+import time
+from dataclasses import dataclass
+from typing import Any, Callable, Iterable, Optional, Sequence
+
+import numpy as np
+
+
+@dataclass(frozen=True)
+class SpeechMetrics:
+    """Latency and duration measurements for one spoken response."""
+
+    first_audio_seconds: float
+    total_seconds: float
+    audio_seconds: float
+    frames_written: int
+    interrupted: bool = False
+
+
+class SpeechEngineError(RuntimeError):
+    """Speech failure that records whether the visitor heard any audio."""
+
+    def __init__(self, message: str, audio_started: bool = False) -> None:
+        super().__init__(message)
+        self.audio_started = audio_started
+
+
+def split_pcm16_frames(
+    pcm: bytes,
+    sample_rate: int,
+    channels: int = 1,
+    frame_ms: float = 20.0,
+) -> list[bytes]:
+    """Split interleaved signed 16-bit PCM into frame-aligned blocks."""
+
+    bytes_per_sample_frame = 2 * channels
+    samples_per_frame = max(1, int(round(sample_rate * frame_ms / 1000.0)))
+    bytes_per_frame = samples_per_frame * bytes_per_sample_frame
+    usable = len(pcm) - (len(pcm) % bytes_per_sample_frame)
+    return [pcm[pos : min(pos + bytes_per_frame, usable)] for pos in range(0, usable, bytes_per_frame)]
+
+
+def scale_pcm16(frame: bytes, volume: float) -> bytes:
+    """Apply volume to PCM without wrapping on int16 overflow."""
+
+    volume = min(2.0, max(0.0, float(volume)))
+    if not frame or abs(volume - 1.0) < 1e-6:
+        return frame
+    samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32)
+    return np.clip(np.round(samples * volume), -32768, 32767).astype(np.int16).tobytes()
+
+
+def jaw_envelope(
+    frames: Sequence[bytes],
+    channels: int = 1,
+    noise_floor: float = 90.0,
+) -> np.ndarray:
+    """Return normalized, lightly smoothed RMS levels for PCM frames."""
+
+    rms_values = []
+    for frame in frames:
+        samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32)
+        if channels > 1 and samples.size >= channels:
+            samples = samples[: samples.size - (samples.size % channels)]
+            samples = samples.reshape(-1, channels).mean(axis=1)
+        rms = float(np.sqrt(np.mean(samples * samples))) if samples.size else 0.0
+        rms_values.append(max(0.0, rms - noise_floor))
+
+    if not rms_values:
+        return np.zeros(0, dtype=np.float32)
+
+    raw = np.asarray(rms_values, dtype=np.float32)
+    reference = float(np.percentile(raw, 95))
+    if reference <= 1e-6:
+        return np.zeros(raw.size, dtype=np.float32)
+
+    normalized = np.clip(raw / reference, 0.0, 1.0)
+    smoothed = np.empty_like(normalized)
+    previous = 0.0
+    for index, level in enumerate(normalized):
+        # Fast opening with a softer release keeps speech readable mechanically.
+        blend = 0.75 if level >= previous else 0.45
+        previous = blend * float(level) + (1.0 - blend) * previous
+        smoothed[index] = previous
+    return smoothed
+
+
+class PiperSpeechEngine:
+    """Load one Piper voice and keep one low-latency output stream warm."""
+
+    def __init__(
+        self,
+        voice: Any,
+        audio_module: Any,
+        jaw_set: Callable[[float], None],
+        volume_getter: Callable[[], float],
+        rest_fraction: float,
+        maximum_fraction: float,
+        output_device: Any = None,
+        frame_ms: float = 20.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.voice = voice
+        self.audio_module = audio_module
+        self.jaw_set = jaw_set
+        self.volume_getter = volume_getter
+        self.rest_fraction = float(rest_fraction)
+        self.maximum_fraction = float(maximum_fraction)
+        self.output_device = output_device
+        self.frame_ms = max(5.0, float(frame_ms))
+        self.clock = clock
+        self.sample_rate = int(voice.config.sample_rate)
+        self._lock = threading.Lock()
+        self._closed = False
+        self._stream = audio_module.RawOutputStream(
+            samplerate=self.sample_rate,
+            channels=1,
+            dtype="int16",
+            device=output_device,
+            blocksize=0,
+            latency="low",
+        )
+        self._stream.start()
+
+    @classmethod
+    def load(
+        cls,
+        model_path: str,
+        audio_module: Any,
+        jaw_set: Callable[[float], None],
+        volume_getter: Callable[[], float],
+        rest_fraction: float,
+        maximum_fraction: float,
+        config_path: Optional[str] = None,
+        output_device: Any = None,
+        frame_ms: float = 20.0,
+    ) -> "PiperSpeechEngine":
+        """Load the ONNX voice once, then open the reusable output stream."""
+
+        from piper import PiperVoice
+
+        voice = PiperVoice.load(model_path, config_path=config_path)
+        return cls(
+            voice=voice,
+            audio_module=audio_module,
+            jaw_set=jaw_set,
+            volume_getter=volume_getter,
+            rest_fraction=rest_fraction,
+            maximum_fraction=maximum_fraction,
+            output_device=output_device,
+            frame_ms=frame_ms,
+        )
+
+    def _restart_stream(self, interrupted: bool) -> None:
+        try:
+            if interrupted and hasattr(self._stream, "abort"):
+                self._stream.abort()
+            else:
+                self._stream.stop()
+            if not self._closed:
+                self._stream.start()
+        except Exception:
+            # The original playback exception, if any, is more useful to callers.
+            pass
+
+    def warm_up(self, text: str = "Ready.") -> float:
+        """Run one silent inference so the first visitor avoids ONNX cold start."""
+
+        with self._lock:
+            if self._closed:
+                raise SpeechEngineError("speech engine is closed")
+            started_at = self.clock()
+            for chunk in self.voice.synthesize(text):
+                # Materialize the property because Piper synthesis is lazy.
+                _ = chunk.audio_int16_bytes
+            return self.clock() - started_at
+
+    def speak(
+        self,
+        text: str,
+        stop_event: Optional[threading.Event] = None,
+        first_audio: Optional[Callable[[float], None]] = None,
+    ) -> SpeechMetrics:
+        """Synthesize and play text without a temporary WAV file."""
+
+        if not text:
+            return SpeechMetrics(0.0, 0.0, 0.0, 0)
+
+        with self._lock:
+            if self._closed:
+                raise SpeechEngineError("speech engine is closed")
+
+            started_at = self.clock()
+            first_audio_at: Optional[float] = None
+            samples_written = 0
+            frames_written = 0
+            interrupted = False
+
+            try:
+                chunks: Iterable[Any] = self.voice.synthesize(text)
+                for chunk in chunks:
+                    if int(chunk.sample_width) != 2:
+                        raise ValueError(f"unsupported Piper sample width: {chunk.sample_width}")
+                    if int(chunk.sample_channels) != 1:
+                        raise ValueError(f"unsupported Piper channel count: {chunk.sample_channels}")
+                    if int(chunk.sample_rate) != self.sample_rate:
+                        raise ValueError(
+                            f"Piper sample rate changed from {self.sample_rate} to {chunk.sample_rate}"
+                        )
+
+                    frames = split_pcm16_frames(
+                        chunk.audio_int16_bytes,
+                        sample_rate=self.sample_rate,
+                        channels=1,
+                        frame_ms=self.frame_ms,
+                    )
+                    levels = jaw_envelope(frames)
+                    for frame, level in zip(frames, levels):
+                        if stop_event is not None and stop_event.is_set():
+                            interrupted = True
+                            break
+
+                        jaw_fraction = self.rest_fraction + (
+                            self.maximum_fraction - self.rest_fraction
+                        ) * float(level)
+                        self.jaw_set(jaw_fraction)
+                        self._stream.write(scale_pcm16(frame, self.volume_getter()))
+                        frames_written += 1
+                        samples_written += len(frame) // 2
+
+                        if first_audio_at is None:
+                            first_audio_at = self.clock()
+                            if first_audio is not None:
+                                first_audio(first_audio_at - started_at)
+
+                    if interrupted:
+                        break
+            except Exception as error:
+                raise SpeechEngineError(
+                    str(error), audio_started=first_audio_at is not None
+                ) from error
+            finally:
+                self.jaw_set(self.rest_fraction)
+                self._restart_stream(interrupted)
+
+            finished_at = self.clock()
+            return SpeechMetrics(
+                first_audio_seconds=(first_audio_at - started_at) if first_audio_at else 0.0,
+                total_seconds=finished_at - started_at,
+                audio_seconds=samples_written / float(self.sample_rate),
+                frames_written=frames_written,
+                interrupted=interrupted,
+            )
+
+    def close(self) -> None:
+        """Release the persistent PortAudio stream."""
+
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self.jaw_set(self.rest_fraction)
+            try:
+                self._stream.stop()
+            except Exception:
+                pass
+            try:
+                self._stream.close()
+            except Exception:
+                pass

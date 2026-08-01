@@ -50,6 +50,35 @@ def discovery_messages(device_name: str) -> List[DiscoveryMessage]:
         "name": f"{title} Reply Time", "uniq_id": f"holiday_{device_name}_reply_time",
         "stat_t": f"{base}/llm/reply_time", "unit_of_measurement": "s",
     })
+    add("sensor", "tts_engine", {
+        "name": f"{title} TTS Engine", "uniq_id": f"holiday_{device_name}_tts_engine",
+        "stat_t": f"{base}/tts/engine",
+    })
+    add("sensor", "tts_model_load_time", {
+        "name": f"{title} TTS Model Load Time",
+        "uniq_id": f"holiday_{device_name}_tts_model_load_time",
+        "stat_t": f"{base}/tts/model_load_time", "unit_of_measurement": "s",
+    })
+    add("sensor", "tts_warmup_time", {
+        "name": f"{title} TTS Warmup Time",
+        "uniq_id": f"holiday_{device_name}_tts_warmup_time",
+        "stat_t": f"{base}/tts/warmup_time", "unit_of_measurement": "s",
+    })
+    add("sensor", "tts_first_audio", {
+        "name": f"{title} TTS First Audio",
+        "uniq_id": f"holiday_{device_name}_tts_first_audio",
+        "stat_t": f"{base}/tts/first_audio", "unit_of_measurement": "s",
+    })
+    add("sensor", "tts_speak_time", {
+        "name": f"{title} TTS Speak Time",
+        "uniq_id": f"holiday_{device_name}_tts_speak_time",
+        "stat_t": f"{base}/tts/speak_time", "unit_of_measurement": "s",
+    })
+    add("sensor", "tts_audio_time", {
+        "name": f"{title} TTS Audio Time",
+        "uniq_id": f"holiday_{device_name}_tts_audio_time",
+        "stat_t": f"{base}/tts/audio_time", "unit_of_measurement": "s",
+    })
     add("sensor", "transcript", {
         "name": f"{title} Transcript", "uniq_id": f"holiday_{device_name}_transcript",
         "stat_t": f"{base}/transcript",
@@ -103,4 +132,3 @@ def discovery_messages(device_name: str) -> List[DiscoveryMessage]:
         "cmd_t": f"{base}/motion/trigger/set",
     })
     return messages
-

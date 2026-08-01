@@ -8,6 +8,7 @@ import numpy as np
 from holiday_skeleton.audio import SpeechGate
 from holiday_skeleton.controller import EventKind, RuntimeState, SkeletonController
 from holiday_skeleton.discovery import discovery_messages
+from holiday_skeleton.speech import PiperSpeechEngine, SpeechEngineError
 
 def _safe_im(name, sub=None):
     try:
@@ -49,7 +50,10 @@ MQTT_BASE    = f"holiday/{DEVICE_NAME}"
 MODEL_PATH   = envs("MODEL_PATH", f"{USER_HOME}/models/vosk-en")
 PIPER_BIN    = envs("PIPER_BIN",  f"{USER_HOME}/bin/piper/piper")
 PIPER_MODEL  = envs("PIPER_MODEL",f"{USER_HOME}/piper/en-gb-alan-low.onnx")
+PIPER_CONFIG = envs("PIPER_CONFIG","").strip() or None
 TTS_WAV      = envs("TTS_WAV", "/tmp/tts.wav")
+TTS_FRAME_MS = float(envs("TTS_FRAME_MS","20"))
+AUDIO_OUTPUT_DEVICE = envs("AUDIO_OUTPUT_DEVICE","").strip() or None
 
 PCA_FREQ     = int(envs("PCA_FREQ","50"))
 JAW_CH       = int(envs("JAW_CH","0"))
@@ -319,23 +323,44 @@ def speak_wav_play(path:str):
     except Exception as e: print("[aplay]",e)
 
 _speech_lock=threading.Lock()
+_speech_engine=None
+
+def _legacy_speak_with_jaw(text:str):
+    """Compatibility path for installs that have not added piper-tts yet."""
+    try:
+        p=subprocess.Popen([PIPER_BIN,"-m",PIPER_MODEL,"-f",TTS_WAV,"-q"],stdin=subprocess.PIPE,text=True,
+                           stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        p.communicate(input=text)
+        if p.returncode != 0:
+            raise RuntimeError(f"Piper exited with status {p.returncode}")
+    except Exception as e:
+        print("[TTS legacy]",e); jaw_chatter_fallback(text); return
+    _amplify_wav_inplace(TTS_WAV,VOLUME)
+    env=jaw_env_from_wav(TTS_WAV)
+    t=threading.Thread(target=speak_wav_play,args=(TTS_WAV,),daemon=True); t.start()
+    (jaw_chatter_fallback(text) if float(np.max(env) if env.size else 0.0)<0.05 else jaw_drive_by_env(env))
+    t.join()
 
 def speak_with_jaw(text:str):
     if not text: return
     with _speech_lock:
         mqtt_pub("speaking","ON")
         try:
-            try:
-                p=subprocess.Popen([PIPER_BIN,"-m",PIPER_MODEL,"-f",TTS_WAV,"-q"],stdin=subprocess.PIPE,text=True,
-                                   stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-                p.communicate(input=text)
-            except Exception as e:
-                print("[TTS]",e); jaw_chatter_fallback(text); return
-            _amplify_wav_inplace(TTS_WAV,VOLUME)
-            env=jaw_env_from_wav(TTS_WAV)
-            t=threading.Thread(target=speak_wav_play,args=(TTS_WAV,),daemon=True); t.start()
-            (jaw_chatter_fallback(text) if float(np.max(env) if env.size else 0.0)<0.05 else jaw_drive_by_env(env))
-            t.join()
+            if _speech_engine is not None:
+                try:
+                    metrics=_speech_engine.speak(
+                        text,
+                        stop_event=controller.stop_event if controller is not None else None,
+                        first_audio=lambda seconds: mqtt_pub("tts/first_audio",f"{seconds:.3f}"),
+                    )
+                    mqtt_pub("tts/speak_time",f"{metrics.total_seconds:.3f}")
+                    mqtt_pub("tts/audio_time",f"{metrics.audio_seconds:.3f}")
+                    return
+                except SpeechEngineError as e:
+                    print("[TTS streaming]",e)
+                    if e.audio_started or (controller is not None and controller.stop_event.is_set()):
+                        return
+            _legacy_speak_with_jaw(text)
         finally:
             _jaw_set(JAW_REST_FRAC)
             mqtt_pub("speaking","OFF")
@@ -567,6 +592,45 @@ def _warm_ollama():
     except Exception as e:
         print("[ollama warmup]",e)
 
+def _configured_output_device():
+    if AUDIO_OUTPUT_DEVICE is None: return None
+    try: return int(AUDIO_OUTPUT_DEVICE)
+    except ValueError: return AUDIO_OUTPUT_DEVICE
+
+def _init_speech_engine():
+    global _speech_engine
+    if sd is None:
+        print("[TTS] sounddevice unavailable; using legacy Piper process")
+        mqtt_pub("tts/engine","legacy",retain=True)
+        return
+    started=time.monotonic()
+    try:
+        _speech_engine=PiperSpeechEngine.load(
+            model_path=PIPER_MODEL,
+            config_path=PIPER_CONFIG,
+            audio_module=sd,
+            jaw_set=_jaw_set,
+            volume_getter=lambda: VOLUME,
+            rest_fraction=JAW_REST_FRAC,
+            maximum_fraction=JAW_MAX_FRAC,
+            output_device=_configured_output_device(),
+            frame_ms=TTS_FRAME_MS,
+        )
+        loaded_at=time.monotonic()
+        warmup_seconds=_speech_engine.warm_up()
+        elapsed=loaded_at-started
+        mqtt_pub("tts/engine","streaming",retain=True)
+        mqtt_pub("tts/model_load_time",f"{elapsed:.3f}",retain=True)
+        mqtt_pub("tts/warmup_time",f"{warmup_seconds:.3f}",retain=True)
+        print(
+            f"[TTS] Piper voice warm and output stream ready in "
+            f"{elapsed + warmup_seconds:.3f}s"
+        )
+    except Exception as e:
+        _speech_engine=None
+        mqtt_pub("tts/engine","legacy",retain=True)
+        print(f"[TTS] warm engine unavailable; using legacy Piper process: {e}")
+
 def _runtime_state_changed(state):
     mqtt_pub("status",state.value,retain=True)
     if state in (RuntimeState.GREETING,RuntimeState.SPEAKING):
@@ -675,6 +739,9 @@ def _cleanup():
     except Exception: pass
     try: _jaw_set(JAW_REST_FRAC)
     except Exception: pass
+    try:
+        if _speech_engine: _speech_engine.close()
+    except Exception: pass
     try: eyes_off()
     except Exception: pass
     try: pir.close()
@@ -692,6 +759,7 @@ def main():
     signal.signal(signal.SIGINT,_signal_handler)
     signal.signal(signal.SIGTERM,_signal_handler)
     _do_mqtt_connect()
+    _init_speech_engine()
     _warm_ollama()
     print("👀 Waiting for motion or MQTT commands…")
     try:
