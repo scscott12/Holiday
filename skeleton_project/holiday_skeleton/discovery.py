@@ -50,6 +50,26 @@ def discovery_messages(device_name: str) -> List[DiscoveryMessage]:
         "name": f"{title} Reply Time", "uniq_id": f"holiday_{device_name}_reply_time",
         "stat_t": f"{base}/llm/reply_time", "unit_of_measurement": "s",
     })
+    add("sensor", "llm_first_token", {
+        "name": f"{title} LLM First Token",
+        "uniq_id": f"holiday_{device_name}_llm_first_token",
+        "stat_t": f"{base}/llm/first_token", "unit_of_measurement": "s",
+    })
+    add("sensor", "llm_first_phrase", {
+        "name": f"{title} LLM First Phrase",
+        "uniq_id": f"holiday_{device_name}_llm_first_phrase",
+        "stat_t": f"{base}/llm/first_phrase", "unit_of_measurement": "s",
+    })
+    add("sensor", "llm_first_audio", {
+        "name": f"{title} Response First Audio",
+        "uniq_id": f"holiday_{device_name}_llm_first_audio",
+        "stat_t": f"{base}/llm/first_audio", "unit_of_measurement": "s",
+    })
+    add("sensor", "llm_phrase_count", {
+        "name": f"{title} Response Phrases",
+        "uniq_id": f"holiday_{device_name}_llm_phrase_count",
+        "stat_t": f"{base}/llm/phrase_count",
+    })
     add("sensor", "tts_engine", {
         "name": f"{title} TTS Engine", "uniq_id": f"holiday_{device_name}_tts_engine",
         "stat_t": f"{base}/tts/engine",

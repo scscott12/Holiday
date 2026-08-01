@@ -14,7 +14,7 @@ pub() {
   fi
 }
 types=(button number switch sensor binary_sensor)
-keys=(say blink flicker restart motion_trigger eyes_dim eyes_full volume motion_enabled night_mode status reply_time transcript motion speaking ready)
+keys=(say blink flicker restart motion_trigger eyes_dim eyes_full volume motion_enabled night_mode status reply_time llm_first_token llm_first_phrase llm_first_audio llm_phrase_count tts_engine tts_model_load_time tts_warmup_time tts_first_audio tts_speak_time tts_audio_time transcript motion speaking ready)
 for typ in "${types[@]}"; do
   for key in "${keys[@]}"; do
     pub "homeassistant/${typ}/${DEVICE}/${key}/config"

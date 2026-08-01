@@ -23,6 +23,22 @@ class DiscoveryTests(unittest.TestCase):
             "holiday/skeleton/tts/first_audio",
         )
 
+    def test_streaming_llm_latency_sensors_are_discovered(self):
+        messages = dict(discovery_messages("skeleton"))
+
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/llm_first_token/config"]["stat_t"],
+            "holiday/skeleton/llm/first_token",
+        )
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/llm_first_phrase/config"]["stat_t"],
+            "holiday/skeleton/llm/first_phrase",
+        )
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/llm_first_audio/config"]["stat_t"],
+            "holiday/skeleton/llm/first_audio",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

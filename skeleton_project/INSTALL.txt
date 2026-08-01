@@ -52,6 +52,8 @@ pip install paho-mqtt
 - Speech: Piper loads once at service startup and streams PCM directly to the output device.
 - AUDIO_OUTPUT_DEVICE may be a sounddevice index or unique name substring; blank uses the system default.
 - TTS_FRAME_MS=20 controls both PCM write and jaw-envelope resolution.
+- Ollama streams in the background while Piper speaks completed phrases.
+- LLM_PHRASE_MIN_CHARS / SOFT_CHARS / MAX_CHARS tune natural phrase boundaries.
 - EYES_INVERT=1 if your LED driver is active-low.
 - JAW_MIN_US/JAW_MAX_US to set jaw travel.
 - Eyes Dim/Full % and Volume % are "number" controls in HA with box entry.
@@ -73,3 +75,5 @@ sudo journalctl -u holiday-skeleton -f
 # Expected once during startup:
 # [TTS] Piper voice warm and output stream ready in ...s
 # Then send two Say commands. Both should use tts/engine=streaming and no /tmp WAV.
+# Trigger a conversation and compare llm/first_token, llm/first_phrase,
+# llm/first_audio, and llm/reply_time. First audio should precede reply completion.
