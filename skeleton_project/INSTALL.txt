@@ -9,6 +9,7 @@ sudo usermod -aG i2c,audio,video,gpio $USER
 ## 1) App layout
 sudo mkdir -p /opt/holiday-skeleton
 sudo cp skeleton_all_in_one_mqtt.py /opt/holiday-skeleton/
+sudo cp -r holiday_skeleton /opt/holiday-skeleton/
 cd /opt/holiday-skeleton
 sudo python3 -m venv venv
 sudo /opt/holiday-skeleton/venv/bin/pip install --upgrade pip
@@ -47,7 +48,13 @@ pip install paho-mqtt
 
 ## 5) Tuning
 - PIR: adjust hardware trimmer or MOTION_HOLD_SEC / MOTION_COOLDOWN_SEC envs.
+- Listening: tune SPEECH_START_TIMEOUT, END_SILENCE_SEC, MAX_UTTERANCE_SEC, and ENERGY_GATE.
 - EYES_INVERT=1 if your LED driver is active-low.
 - JAW_MIN_US/JAW_MAX_US to set jaw travel.
 - Eyes Dim/Full % and Volume % are "number" controls in HA with box entry.
 - Night mode reduces brightness & volume.
+
+## 6) Hardware-free checks
+cd /path/to/skeleton_project
+python3 -m unittest discover -s tests -v
+python3 -m compileall -q .

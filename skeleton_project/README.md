@@ -1,6 +1,21 @@
 # Holiday Skeleton (PCA9685 + MQTT + Home Assistant)
 
-One-file animatronic skeleton that **listens → thinks → speaks**, with **moving jaw** and **PWM eyes** via PCA9685, offline **Vosk** STT, **Piper** TTS, and optional **Ollama** LLM quips. Auto-publishes **MQTT discovery** so Home Assistant gets clean controls out-of-the-box.
+Single-process animatronic skeleton that **listens → thinks → speaks**, with **moving jaw** and **PWM eyes** via PCA9685, offline **Vosk** STT, **Piper** TTS, and optional **Ollama** LLM quips. Auto-publishes **MQTT discovery** so Home Assistant gets clean controls out-of-the-box.
+
+The service uses a serialized event controller: MQTT and PIR callbacks only enqueue work, while one controller owns speech, listening, eyes, and jaw movement. This prevents overlapping conversations and hardware races without adding inter-process latency.
+
+## Runtime structure
+
+```text
+skeleton_all_in_one_mqtt.py  service composition and hardware integrations
+holiday_skeleton/
+  controller.py              event queue and runtime states
+  audio.py                   preroll, speech gate, and endpoint timing
+  discovery.py               shared Home Assistant MQTT definitions
+tests/                       hardware-free unit tests
+```
+
+Runtime states published to `holiday/skeleton/status` are `starting`, `idle`, `greeting`, `listening`, `thinking`, `speaking`, `effect`, `cooldown`, `stopping`, and `error`.
 
 ## Hardware (quick)
 - **Raspberry Pi** (Bookworm OK)
@@ -19,8 +34,9 @@ One-file animatronic skeleton that **listens → thinks → speaks**, with **mov
 ## Home Assistant
 Clean discovery is published to topics under `homeassistant/…` with device name `skeleton` (configurable). Minimal controls only.
 
-### Optional: Type-to-Say
-Use `ha/helpers.yaml` (an `input_text`) and `ha/automation_say_from_input_text.yaml` to push text to `holiday/skeleton/say/set`.
+### Type-to-Say
+
+MQTT discovery creates `text.skeleton_say`. Entering text there publishes it to `holiday/skeleton/say/set`. The files under `ha/` remain available if you prefer an `input_text` plus button workflow.
 
 ### Example Lovelace (Dashboard) YAML
 ```yaml
@@ -38,7 +54,7 @@ views:
           - entity: number.skeleton_volume
           - entity: button.skeleton_blink
           - entity: button.skeleton_flicker
-          - entity: button.skeleton_say
+          - entity: text.skeleton_say
       - type: entities
         title: Status
         entities:
@@ -73,7 +89,27 @@ Environment="JAW_CH=0"
 Environment="JAW_MIN_US=512"
 Environment="JAW_MAX_US=1000"
 Environment="PIR_PIN=17"
+Environment="SPEECH_START_TIMEOUT=10.0"
+Environment="END_SILENCE_SEC=0.75"
+Environment="MAX_UTTERANCE_SEC=12.0"
+```
+
+Speech timing is split into three controls:
+
+- `SPEECH_START_TIMEOUT`: how long the visitor has to begin talking.
+- `END_SILENCE_SEC`: how much silence ends an utterance.
+- `MAX_UTTERANCE_SEC`: maximum speech length after talking begins.
+
+The default 0.75-second endpoint silence is a good starting point for a responsive outdoor prop. Raise `ENERGY_GATE` if ambient noise starts false conversations.
+
+## Checks
+
+Run the hardware-free checks from `skeleton_project/`:
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 -m compileall -q .
 ```
 
 ## License
-MIT
+[MIT](LICENSE)
