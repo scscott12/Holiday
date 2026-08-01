@@ -89,10 +89,40 @@ def discovery_messages(device_name: str) -> List[DiscoveryMessage]:
         "uniq_id": f"holiday_{device_name}_tts_warmup_time",
         "stat_t": f"{base}/tts/warmup_time", "unit_of_measurement": "s",
     })
+    add("sensor", "tts_cache_state", {
+        "name": f"{title} TTS Cache State",
+        "uniq_id": f"holiday_{device_name}_tts_cache_state",
+        "stat_t": f"{base}/tts/cache_state",
+    })
+    add("sensor", "tts_cache_entries", {
+        "name": f"{title} TTS Cached Lines",
+        "uniq_id": f"holiday_{device_name}_tts_cache_entries",
+        "stat_t": f"{base}/tts/cache_entries",
+    })
+    add("sensor", "tts_cache_warmup_time", {
+        "name": f"{title} TTS Cache Warmup Time",
+        "uniq_id": f"holiday_{device_name}_tts_cache_warmup_time",
+        "stat_t": f"{base}/tts/cache_warmup_time", "unit_of_measurement": "s",
+    })
+    add("sensor", "tts_cache_memory", {
+        "name": f"{title} TTS Cache Memory",
+        "uniq_id": f"holiday_{device_name}_tts_cache_memory",
+        "stat_t": f"{base}/tts/cache_memory_kb", "unit_of_measurement": "KiB",
+    })
+    add("binary_sensor", "tts_cache_hit", {
+        "name": f"{title} TTS Cache Hit",
+        "uniq_id": f"holiday_{device_name}_tts_cache_hit",
+        "stat_t": f"{base}/tts/cache_hit", "pl_on": "ON", "pl_off": "OFF",
+    })
     add("sensor", "tts_first_audio", {
         "name": f"{title} TTS First Audio",
         "uniq_id": f"holiday_{device_name}_tts_first_audio",
         "stat_t": f"{base}/tts/first_audio", "unit_of_measurement": "s",
+    })
+    add("sensor", "tts_greeting_first_audio", {
+        "name": f"{title} Greeting First Audio",
+        "uniq_id": f"holiday_{device_name}_tts_greeting_first_audio",
+        "stat_t": f"{base}/tts/greeting_first_audio", "unit_of_measurement": "s",
     })
     add("sensor", "tts_speak_time", {
         "name": f"{title} TTS Speak Time",

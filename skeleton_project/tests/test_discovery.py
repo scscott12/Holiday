@@ -23,6 +23,26 @@ class DiscoveryTests(unittest.TestCase):
             "holiday/skeleton/tts/first_audio",
         )
 
+    def test_canned_speech_cache_sensors_are_discovered(self):
+        messages = dict(discovery_messages("skeleton"))
+
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/tts_cache_state/config"]["stat_t"],
+            "holiday/skeleton/tts/cache_state",
+        )
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/tts_cache_entries/config"]["stat_t"],
+            "holiday/skeleton/tts/cache_entries",
+        )
+        self.assertEqual(
+            messages["homeassistant/binary_sensor/skeleton/tts_cache_hit/config"]["stat_t"],
+            "holiday/skeleton/tts/cache_hit",
+        )
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/tts_greeting_first_audio/config"]["stat_t"],
+            "holiday/skeleton/tts/greeting_first_audio",
+        )
+
     def test_streaming_llm_latency_sensors_are_discovered(self):
         messages = dict(discovery_messages("skeleton"))
 

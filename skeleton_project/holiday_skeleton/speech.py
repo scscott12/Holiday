@@ -20,6 +20,31 @@ class SpeechMetrics:
     frames_written: int
     interrupted: bool = False
     phrases_spoken: int = 0
+    cached_phrases: int = 0
+
+
+@dataclass(frozen=True)
+class SpeechCacheMetrics:
+    """Result of pre-rendering canned lines into the engine-local cache."""
+
+    requested_entries: int
+    new_entries: int
+    existing_entries: int
+    failed_entries: int
+    total_entries: int
+    warmup_seconds: float
+    audio_seconds: float
+    pcm_bytes: int
+    errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _CachedSpeech:
+    """Raw voice audio plus its precomputed jaw envelope."""
+
+    frames: tuple[bytes, ...]
+    levels: tuple[float, ...]
+    samples: int
 
 
 class SpeechEngineError(RuntimeError):
@@ -115,6 +140,7 @@ class PiperSpeechEngine:
         self.frame_ms = max(5.0, float(frame_ms))
         self.clock = clock
         self.sample_rate = int(voice.config.sample_rate)
+        self._cache: dict[str, _CachedSpeech] = {}
         self._lock = threading.Lock()
         self._closed = False
         self._stream = audio_module.RawOutputStream(
@@ -168,6 +194,98 @@ class PiperSpeechEngine:
             # The original playback exception, if any, is more useful to callers.
             pass
 
+    @staticmethod
+    def _cache_key(text: Any) -> str:
+        """Normalize insignificant whitespace while preserving spoken wording."""
+
+        return " ".join(str(text or "").split())
+
+    def _frames_from_chunk(self, chunk: Any) -> tuple[list[bytes], np.ndarray]:
+        if int(chunk.sample_width) != 2:
+            raise ValueError(f"unsupported Piper sample width: {chunk.sample_width}")
+        if int(chunk.sample_channels) != 1:
+            raise ValueError(f"unsupported Piper channel count: {chunk.sample_channels}")
+        if int(chunk.sample_rate) != self.sample_rate:
+            raise ValueError(
+                f"Piper sample rate changed from {self.sample_rate} to {chunk.sample_rate}"
+            )
+
+        frames = split_pcm16_frames(
+            chunk.audio_int16_bytes,
+            sample_rate=self.sample_rate,
+            channels=1,
+            frame_ms=self.frame_ms,
+        )
+        return frames, jaw_envelope(frames)
+
+    def _render_for_cache(self, text: str) -> _CachedSpeech:
+        frames: list[bytes] = []
+        levels: list[float] = []
+        samples = 0
+        for chunk in self.voice.synthesize(text):
+            chunk_frames, chunk_levels = self._frames_from_chunk(chunk)
+            frames.extend(chunk_frames)
+            levels.extend(float(level) for level in chunk_levels)
+            samples += sum(len(frame) // 2 for frame in chunk_frames)
+        if not frames:
+            raise ValueError("Piper produced no PCM audio")
+        return _CachedSpeech(tuple(frames), tuple(levels), samples)
+
+    @property
+    def cache_entries(self) -> int:
+        return len(self._cache)
+
+    @property
+    def cache_pcm_bytes(self) -> int:
+        return sum(sum(len(frame) for frame in item.frames) for item in self._cache.values())
+
+    def cache_phrases(self, phrases: Iterable[str]) -> SpeechCacheMetrics:
+        """Pre-render unique canned lines without writing anything to the speaker.
+
+        The cache belongs to this loaded voice instance, so restarting after a
+        model, voice-config, frame-size, or prompt change cannot reuse stale
+        audio. Individual failures are reported but do not disable live TTS.
+        """
+
+        requested = list(dict.fromkeys(
+            key for key in (self._cache_key(text) for text in phrases) if key
+        ))
+        with self._lock:
+            if self._closed:
+                raise SpeechEngineError("speech engine is closed")
+            started_at = self.clock()
+            new_entries = 0
+            existing_entries = 0
+            failed_entries = 0
+            rendered_samples = 0
+            errors: list[str] = []
+
+            for text in requested:
+                if text in self._cache:
+                    existing_entries += 1
+                    continue
+                try:
+                    rendered = self._render_for_cache(text)
+                except Exception as error:
+                    failed_entries += 1
+                    errors.append(f"{text[:48]}: {error}")
+                    continue
+                self._cache[text] = rendered
+                new_entries += 1
+                rendered_samples += rendered.samples
+
+            return SpeechCacheMetrics(
+                requested_entries=len(requested),
+                new_entries=new_entries,
+                existing_entries=existing_entries,
+                failed_entries=failed_entries,
+                total_entries=len(self._cache),
+                warmup_seconds=self.clock() - started_at,
+                audio_seconds=rendered_samples / float(self.sample_rate),
+                pcm_bytes=self.cache_pcm_bytes,
+                errors=tuple(errors),
+            )
+
     def warm_up(self, text: str = "Ready.") -> float:
         """Run one silent inference so the first visitor avoids ONNX cold start."""
 
@@ -219,6 +337,7 @@ class PiperSpeechEngine:
             samples_written = 0
             frames_written = 0
             phrases_spoken = 0
+            cached_phrases = 0
             interrupted = False
 
             try:
@@ -232,24 +351,19 @@ class PiperSpeechEngine:
 
                     phrase_started_at = self.clock()
                     phrase_audio_started = False
-                    chunks: Iterable[Any] = self.voice.synthesize(text)
-                    for chunk in chunks:
-                        if int(chunk.sample_width) != 2:
-                            raise ValueError(f"unsupported Piper sample width: {chunk.sample_width}")
-                        if int(chunk.sample_channels) != 1:
-                            raise ValueError(f"unsupported Piper channel count: {chunk.sample_channels}")
-                        if int(chunk.sample_rate) != self.sample_rate:
-                            raise ValueError(
-                                f"Piper sample rate changed from {self.sample_rate} to {chunk.sample_rate}"
-                            )
-
-                        frames = split_pcm16_frames(
-                            chunk.audio_int16_bytes,
-                            sample_rate=self.sample_rate,
-                            channels=1,
-                            frame_ms=self.frame_ms,
+                    cached = self._cache.get(self._cache_key(text))
+                    if cached is not None:
+                        cached_phrases += 1
+                        rendered_chunks: Iterable[tuple[Sequence[bytes], Sequence[float]]] = (
+                            (cached.frames, cached.levels),
                         )
-                        levels = jaw_envelope(frames)
+                    else:
+                        rendered_chunks = (
+                            self._frames_from_chunk(chunk)
+                            for chunk in self.voice.synthesize(text)
+                        )
+
+                    for frames, levels in rendered_chunks:
                         for frame, level in zip(frames, levels):
                             if stop_event is not None and stop_event.is_set():
                                 interrupted = True
@@ -294,6 +408,7 @@ class PiperSpeechEngine:
                 frames_written=frames_written,
                 interrupted=interrupted,
                 phrases_spoken=phrases_spoken,
+                cached_phrases=cached_phrases,
             )
 
     def close(self) -> None:
@@ -303,6 +418,7 @@ class PiperSpeechEngine:
             if self._closed:
                 return
             self._closed = True
+            self._cache.clear()
             self.jaw_set(self.rest_fraction)
             try:
                 self._stream.stop()
