@@ -28,6 +28,7 @@ class EventKind(str, Enum):
     SET_PERSONALITY = "set_personality"
     PLAY_SCENE = "play_scene"
     STOP_SCENE = "stop_scene"
+    RUN_SELF_TEST = "run_self_test"
     RESTART = "restart"
     SHUTDOWN = "shutdown"
 
@@ -42,6 +43,7 @@ class RuntimeState(str, Enum):
     EFFECT = "effect"
     SCENE = "scene"
     IDLE_LIFE = "idle_life"
+    SELF_TEST = "self_test"
     COOLDOWN = "cooldown"
     STOPPING = "stopping"
     ERROR = "error"
@@ -73,6 +75,7 @@ class SkeletonController:
         self._stop_event = threading.Event()
         self._idle_interrupt = threading.Event()
         self._scene_interrupt = threading.Event()
+        self._self_test_interrupt = threading.Event()
         self._pending_trigger = False
         self._pending_lock = threading.Lock()
         self._state = RuntimeState.STARTING
@@ -93,6 +96,10 @@ class SkeletonController:
     def scene_interrupt_event(self) -> threading.Event:
         return self._scene_interrupt
 
+    @property
+    def self_test_interrupt_event(self) -> threading.Event:
+        return self._self_test_interrupt
+
     def interrupt_idle(self) -> None:
         """Ask an in-progress idle behavior to yield without queuing work."""
 
@@ -102,6 +109,11 @@ class SkeletonController:
         """Ask an in-progress scene to yield without touching hardware."""
 
         self._scene_interrupt.set()
+
+    def interrupt_self_test(self) -> None:
+        """Ask an in-progress operator self-test to yield safely."""
+
+        self._self_test_interrupt.set()
 
     def set_state(self, state: RuntimeState) -> None:
         changed = state != self._state
@@ -138,6 +150,7 @@ class SkeletonController:
 
         self.interrupt_idle()
         self.interrupt_scene()
+        self.interrupt_self_test()
 
         if kind is EventKind.TRIGGER:
             with self._pending_lock:
@@ -158,6 +171,7 @@ class SkeletonController:
         self._stop_event.set()
         self.interrupt_idle()
         self.interrupt_scene()
+        self.interrupt_self_test()
         try:
             self._queue.put_nowait(Event(EventKind.SHUTDOWN, source=source))
         except queue.Full:
@@ -199,6 +213,13 @@ class SkeletonController:
                 self._scene_interrupt.clear()
                 if not self._queue.empty():
                     self._scene_interrupt.set()
+
+            if event.kind is EventKind.RUN_SELF_TEST:
+                # The request wakes a prior self-test too. Clear the signal only
+                # once this request reaches the head of the serialized queue.
+                self._self_test_interrupt.clear()
+                if not self._queue.empty():
+                    self._self_test_interrupt.set()
 
             try:
                 self.heartbeat()

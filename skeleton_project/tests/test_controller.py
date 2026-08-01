@@ -135,6 +135,56 @@ class SkeletonControllerTests(unittest.TestCase):
 
         self.assertEqual(observed, [True])
 
+    def test_foreground_event_interrupts_active_self_test_before_running(self):
+        test_started = threading.Event()
+        test_finished = threading.Event()
+        handled = []
+        interrupted = []
+        controller = None
+
+        def handler(event):
+            handled.append(event.kind)
+            if event.kind is EventKind.RUN_SELF_TEST:
+                test_started.set()
+                interrupted.append(
+                    controller.self_test_interrupt_event.wait(timeout=1.0)
+                )
+                test_finished.set()
+            else:
+                controller.request_stop("test")
+
+        controller = SkeletonController(handler)
+        self.assertTrue(controller.enqueue(EventKind.RUN_SELF_TEST, source="test"))
+        worker = threading.Thread(target=controller.run_forever)
+        worker.start()
+        self.assertTrue(test_started.wait(timeout=1.0))
+
+        self.assertTrue(controller.enqueue(EventKind.SAY, "visitor", "test"))
+
+        self.assertTrue(test_finished.wait(timeout=1.0))
+        worker.join(timeout=1.0)
+        self.assertEqual(interrupted, [True])
+        self.assertEqual(handled, [EventKind.RUN_SELF_TEST, EventKind.SAY])
+        self.assertFalse(worker.is_alive())
+
+    def test_self_test_yields_when_a_later_event_is_already_queued(self):
+        observed = []
+        controller = None
+
+        def handler(event):
+            if event.kind is EventKind.RUN_SELF_TEST:
+                observed.append(controller.self_test_interrupt_event.is_set())
+            else:
+                controller.request_stop("test")
+
+        controller = SkeletonController(handler)
+        controller.enqueue(EventKind.RUN_SELF_TEST, source="test")
+        controller.enqueue(EventKind.SAY, "visitor", "test")
+
+        controller.run_forever()
+
+        self.assertEqual(observed, [True])
+
     def test_controller_heartbeat_reports_state_and_survives_callback_failure(self):
         observed = []
         controller = None

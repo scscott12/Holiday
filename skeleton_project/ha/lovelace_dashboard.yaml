@@ -13,6 +13,8 @@ views:
           - number.skeleton_volume
           - select.skeleton_personality
           - button.skeleton_play_personality_scene
+          - button.skeleton_run_self_test
+          - button.skeleton_stop_self_test
           - button.skeleton_blink
           - button.skeleton_flicker
           - text.skeleton_say
@@ -53,6 +55,14 @@ views:
           - sensor.skeleton_settings_last_saved
           - sensor.skeleton_settings_last_error
           - sensor.skeleton_settings_save_count
+          - binary_sensor.skeleton_self_test_active
+          - sensor.skeleton_self_test_state
+          - sensor.skeleton_self_test_step
+          - sensor.skeleton_self_test_last_result
+          - sensor.skeleton_self_test_last_error
+          - sensor.skeleton_self_test_last_run
+          - sensor.skeleton_self_test_count
+          - sensor.skeleton_self_tests_interrupted
           - sensor.skeleton_status
           - sensor.skeleton_reply_time
           - sensor.skeleton_llm_first_token

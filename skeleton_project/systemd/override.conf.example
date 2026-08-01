@@ -56,6 +56,14 @@ Environment="OLLAMA_HEALTHCHECK_ENABLED=1"
 # Keep this below WatchdogSec in the base service; the runtime also clamps it.
 Environment="WATCHDOG_CONTROLLER_STALE_SEC=45"
 
+# Manual-only output verification. Values are clamped to conservative bounds.
+Environment="SELF_TEST_ENABLED=1"
+Environment="SELF_TEST_MAX_SECONDS=12"
+Environment="SELF_TEST_EYES_FRAC=0.25"
+Environment="SELF_TEST_JAW_FRAC=0.20"
+Environment="SELF_TEST_STEP_SEC=0.35"
+Environment="SELF_TEST_LINE=Systems awake and ready."
+
 Environment="SPEECH_START_TIMEOUT=10.0"
 Environment="END_SILENCE_SEC=0.75"
 Environment="MAX_UTTERANCE_SEC=12.0"

@@ -173,6 +173,26 @@ class DiscoveryTests(unittest.TestCase):
             "timestamp",
         )
 
+    def test_operator_self_test_controls_and_report_are_discovered(self):
+        messages = dict(discovery_messages("skeleton"))
+
+        self.assertEqual(
+            messages["homeassistant/button/skeleton/self_test_run/config"]["cmd_t"],
+            "holiday/skeleton/self_test/run/set",
+        )
+        self.assertEqual(
+            messages["homeassistant/button/skeleton/self_test_stop/config"]["cmd_t"],
+            "holiday/skeleton/self_test/stop/set",
+        )
+        self.assertEqual(
+            messages["homeassistant/binary_sensor/skeleton/self_test_active/config"]["stat_t"],
+            "holiday/skeleton/self_test/active",
+        )
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/self_test_last_result/config"]["json_attr_t"],
+            "holiday/skeleton/self_test/report",
+        )
+
     def test_health_summary_and_component_attributes_are_discovered(self):
         messages = dict(discovery_messages("skeleton"))
 

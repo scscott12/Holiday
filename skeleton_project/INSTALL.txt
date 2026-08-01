@@ -86,6 +86,10 @@ pip install paho-mqtt
 - The packaged systemd unit waits for native READY=1 and restarts a hung controller with WatchdogSec=60.
 - WATCHDOG_CONTROLLER_STALE_SEC=45 controls when the runtime deliberately stops watchdog feeds; keep it below WatchdogSec.
 - Manual `python3 skeleton_all_in_one_mqtt.py` runs report watchdog disabled without affecting other features.
+- SELF_TEST_ENABLED=1 exposes a manual Home Assistant output test; it never runs automatically.
+- The test uses two low eye pulses, two small jaw moves, and one cached streaming-Piper line.
+- SELF_TEST_EYES_FRAC and SELF_TEST_JAW_FRAC are hard-capped at 0.35; SELF_TEST_MAX_SECONDS defaults to 12.
+- PIR, another MQTT command, Stop Self-Test, shutdown, or speaker-step barge-in interrupts the test and restores safe outputs.
 - EYES_INVERT=1 if your LED driver is active-low.
 - JAW_MIN_US/JAW_MAX_US to set jaw travel.
 - Eyes Dim/Full % and Volume % are "number" controls in HA with box entry.
@@ -142,3 +146,9 @@ sudo journalctl -u holiday-skeleton -f
 # and 1min. In Home Assistant, Watchdog Enabled should be on, Watchdog State
 # should be ready, Controller Heartbeat Age should stay below 45s, and Feed Count
 # should continue increasing. A manual Python run should instead report disabled.
+# While the controller is idle, press Run Self-Test and observe two eye pulses,
+# two small jaw movements, and "Systems awake and ready." from the speaker.
+# Confirm the result is passed and the report contains eyes, jaw, and speaker.
+# Run it again, then trigger the PIR or press Stop Self-Test. The result should be
+# interrupted, with the jaw at rest and eyes returned to idle. A run request made
+# during a visit or scene should report busy without interrupting that activity.
