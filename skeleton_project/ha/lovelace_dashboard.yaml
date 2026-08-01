@@ -20,4 +20,9 @@ views:
           - binary_sensor.skeleton_speaking
           - sensor.skeleton_status
           - sensor.skeleton_reply_time
+          - sensor.skeleton_tts_engine
+          - sensor.skeleton_tts_model_load_time
+          - sensor.skeleton_tts_warmup_time
+          - sensor.skeleton_tts_first_audio
+          - sensor.skeleton_tts_speak_time
           - sensor.skeleton_transcript

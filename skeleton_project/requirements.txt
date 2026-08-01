@@ -4,5 +4,6 @@ gpiozero
 vosk
 sounddevice
 paho-mqtt
+piper-tts==1.6.0
 numpy
 requests

@@ -49,6 +49,9 @@ pip install paho-mqtt
 ## 5) Tuning
 - PIR: adjust hardware trimmer or MOTION_HOLD_SEC / MOTION_COOLDOWN_SEC envs.
 - Listening: tune SPEECH_START_TIMEOUT, END_SILENCE_SEC, MAX_UTTERANCE_SEC, and ENERGY_GATE.
+- Speech: Piper loads once at service startup and streams PCM directly to the output device.
+- AUDIO_OUTPUT_DEVICE may be a sounddevice index or unique name substring; blank uses the system default.
+- TTS_FRAME_MS=20 controls both PCM write and jaw-envelope resolution.
 - EYES_INVERT=1 if your LED driver is active-low.
 - JAW_MIN_US/JAW_MAX_US to set jaw travel.
 - Eyes Dim/Full % and Volume % are "number" controls in HA with box entry.
@@ -58,3 +61,15 @@ pip install paho-mqtt
 cd /path/to/skeleton_project
 python3 -m unittest discover -s tests -v
 python3 -m compileall -q .
+
+## 7) Existing-install upgrade / smoke test
+sudo cp skeleton_all_in_one_mqtt.py /opt/holiday-skeleton/
+sudo cp -r holiday_skeleton /opt/holiday-skeleton/
+sudo cp requirements.txt /opt/holiday-skeleton/
+sudo /opt/holiday-skeleton/venv/bin/pip install -r /opt/holiday-skeleton/requirements.txt
+sudo systemctl restart holiday-skeleton
+sudo journalctl -u holiday-skeleton -f
+
+# Expected once during startup:
+# [TTS] Piper voice warm and output stream ready in ...s
+# Then send two Say commands. Both should use tts/engine=streaming and no /tmp WAV.

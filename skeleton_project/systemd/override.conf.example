@@ -19,3 +19,8 @@ Environment="JAW_CH=0"
 Environment="SPEECH_START_TIMEOUT=10.0"
 Environment="END_SILENCE_SEC=0.75"
 Environment="MAX_UTTERANCE_SEC=12.0"
+
+# Optional: a sounddevice index or a unique substring from sd.query_devices().
+# Leave empty to use the system default output.
+Environment="AUDIO_OUTPUT_DEVICE="
+Environment="TTS_FRAME_MS=20"

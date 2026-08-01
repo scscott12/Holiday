@@ -11,6 +11,7 @@ skeleton_all_in_one_mqtt.py  service composition and hardware integrations
 holiday_skeleton/
   controller.py              event queue and runtime states
   audio.py                   preroll, speech gate, and endpoint timing
+  speech.py                  warm Piper voice, PCM playback, and jaw envelope
   discovery.py               shared Home Assistant MQTT definitions
 tests/                       hardware-free unit tests
 ```
@@ -62,6 +63,8 @@ views:
           - binary_sensor.skeleton_speaking
           - sensor.skeleton_status
           - sensor.skeleton_reply_time
+          - sensor.skeleton_tts_engine
+          - sensor.skeleton_tts_first_audio
           - sensor.skeleton_transcript
 ```
 
@@ -92,6 +95,8 @@ Environment="PIR_PIN=17"
 Environment="SPEECH_START_TIMEOUT=10.0"
 Environment="END_SILENCE_SEC=0.75"
 Environment="MAX_UTTERANCE_SEC=12.0"
+Environment="AUDIO_OUTPUT_DEVICE="
+Environment="TTS_FRAME_MS=20"
 ```
 
 Speech timing is split into three controls:
@@ -101,6 +106,31 @@ Speech timing is split into three controls:
 - `MAX_UTTERANCE_SEC`: maximum speech length after talking begins.
 
 The default 0.75-second endpoint silence is a good starting point for a responsive outdoor prop. Raise `ENERGY_GATE` if ambient noise starts false conversations.
+
+## Low-latency speech
+
+The service loads `PIPER_MODEL` once during startup, runs one silent inference to warm the ONNX path, and keeps a PortAudio output stream ready. Speech is sent directly from Piper to the speaker as signed 16-bit PCM, so the normal path no longer launches Piper for every line, writes `/tmp/tts.wav`, reopens it, or scans the whole WAV before playback.
+
+The jaw follows 20 ms RMS audio frames as those same frames are written to the speaker. Change `TTS_FRAME_MS` only if the servo needs slower movement; 15–25 ms is the useful range. `AUDIO_OUTPUT_DEVICE` may be a sounddevice device index or a unique device-name substring. Leave it empty to use the system default.
+
+Home Assistant reports:
+
+- `sensor.skeleton_tts_engine`: `streaming` on the warm path or `legacy` when startup falls back to the existing Piper binary.
+- `sensor.skeleton_tts_model_load_time`: one-time voice load duration.
+- `sensor.skeleton_tts_warmup_time`: one-time silent inference that removes first-greeting cold start.
+- `sensor.skeleton_tts_first_audio`: synthesis-to-first-PCM latency for the latest utterance.
+- `sensor.skeleton_tts_speak_time`: total synthesis and playback time.
+- `sensor.skeleton_tts_audio_time`: generated PCM duration for comparison with wall time.
+
+After upgrading an existing Pi checkout, reinstall requirements before restarting the service:
+
+```bash
+sudo /opt/holiday-skeleton/venv/bin/pip install -r /opt/holiday-skeleton/requirements.txt
+sudo systemctl restart holiday-skeleton
+sudo journalctl -u holiday-skeleton -f
+```
+
+Startup should log `Piper voice warm and output stream ready`. If it logs `using legacy Piper process`, verify the `piper-tts` install, `PIPER_MODEL`, its adjacent `.onnx.json` file, and the configured output device.
 
 ## Checks
 
