@@ -13,6 +13,7 @@ holiday_skeleton/
   audio.py                   preroll, speech gate, and endpoint timing
   barge_in.py                echo-aware interruption command monitor
   brain.py                   Ollama stream producer and phrase assembly
+  health.py                  health aggregation and Pi telemetry
   idle_life.py               sparse idle-action scheduler
   speech.py                  warm Piper voice, PCM playback, and jaw envelope
   discovery.py               shared Home Assistant MQTT definitions
@@ -81,6 +82,17 @@ views:
           - sensor.skeleton_tts_first_audio
           - sensor.skeleton_greeting_first_audio
           - sensor.skeleton_transcript
+      - type: entities
+        title: Health & Performance
+        entities:
+          - binary_sensor.skeleton_health_ok
+          - sensor.skeleton_health
+          - sensor.skeleton_health_reasons
+          - sensor.skeleton_cpu_temperature
+          - sensor.skeleton_memory_use
+          - sensor.skeleton_disk_use
+          - binary_sensor.skeleton_pi_throttled
+          - sensor.skeleton_response_first_audio_rolling_p95
 ```
 
 ## Install (short)
@@ -94,7 +106,7 @@ views:
 Create `/etc/systemd/system/holiday-skeleton.service.d/override.conf`:
 ```ini
 [Service]
-Environment="MQTT_HOST=192.168.68.70"
+Environment="MQTT_HOST=<broker-ip>"
 Environment="MQTT_PORT=1883"
 Environment="MQTT_USER=<username>"
 Environment="MQTT_PASS=Your!Password"   # keep quotes if it contains !
@@ -113,6 +125,11 @@ Environment="IDLE_LIFE_MAX_SEC=45.0"
 Environment="IDLE_MUTTER_CHANCE=0.12"
 Environment="IDLE_EYE_PULSE_FRAC=0.10"
 Environment="IDLE_JAW_TWITCH_FRAC=0.14"
+Environment="HEALTH_INTERVAL_SEC=30"
+Environment="HEALTH_LATENCY_WINDOW=20"
+Environment="HEALTH_TEMP_WARN_C=75"
+Environment="HEALTH_TEMP_CRITICAL_C=82"
+Environment="OLLAMA_HEALTHCHECK_ENABLED=1"
 Environment="SPEECH_START_TIMEOUT=10.0"
 Environment="END_SILENCE_SEC=0.75"
 Environment="MAX_UTTERANCE_SEC=12.0"
@@ -228,6 +245,29 @@ Configuration:
 - `IDLE_LINES`: optional prompt-file list of canned mutters; these join the startup TTS cache.
 
 Turning off `switch.skeleton_motion_enabled` disarms idle life as well as visitor triggering. `switch.skeleton_idle_life_enabled` disables only ambient behaviors. Home Assistant reports `ready`, `running`, `disabled`, `disarmed`, or `stopping`, plus the latest action, total action count, and number interrupted by higher-priority activity.
+
+## Health and performance
+
+The runtime performs explicit startup checks for MQTT, the Vosk microphone path, Piper, Ollama, the PIR, and PCA9685 animation hardware. It reports one of five overall states:
+
+- `healthy`: all enabled paths are ready.
+- `degraded`: the skeleton remains usable, but an optional path or preferred fast path is unavailable. Examples include no PIR with MQTT trigger still working, Ollama using the local spoken fallback, or legacy Piper replacing streaming audio.
+- `unhealthy`: a critical function is unsafe or unavailable, such as no usable Piper path, critical CPU temperature, or critically full storage. **Ready** turns off in this state.
+- `starting` / `stopping`: startup checks or shutdown are in progress.
+
+The health sensor exposes each component's state and detail through Home Assistant's [MQTT JSON attributes](https://www.home-assistant.io/integrations/sensor.mqtt/#json-attributes-topic-configuration), while `sensor.skeleton_health_reasons` gives the short actionable summary. Every 30 seconds, a daemon monitor reads CPU temperature, one-minute load, memory, disk, uptime, and Raspberry Pi throttle flags. It also makes a lightweight Ollama `/api/tags` request; it never generates text for the periodic check. Monitoring runs outside the controller and audio callbacks, and any monitor failure is isolated from conversation operation.
+
+Home Assistant also receives rolling averages and P95 values over the latest 20 samples for TTS first audio, greeting first audio, response first audio, and full Ollama reply time. `sensor.skeleton_audio_dropped_frames` should remain at zero; a rising value means the microphone callback is producing data faster than recognition consumes it.
+
+Configuration:
+
+- `HEALTH_INTERVAL_SEC`: system/probe interval; default `30` seconds.
+- `HEALTH_LATENCY_WINDOW`: number of recent turns in each rolling statistic; default `20`.
+- `HEALTH_TEMP_WARN_C` / `HEALTH_TEMP_CRITICAL_C`: default `75` / `82` °C.
+- `HEALTH_DISK_WARN_PERCENT` / `HEALTH_DISK_CRITICAL_PERCENT`: default `90` / `97` percent used.
+- `OLLAMA_HEALTHCHECK_ENABLED`: set to `0` to disable only the periodic `/api/tags` probe.
+
+The monitor uses standard Linux files and the optional Raspberry Pi [`vcgencmd get_throttled`](https://www.raspberrypi.com/documentation/computers/os.html#get_throttled) command, so it adds no Python dependency. Historical throttle flags remain visible even after the immediate condition clears; only current throttle bits degrade health.
 
 ## Checks
 

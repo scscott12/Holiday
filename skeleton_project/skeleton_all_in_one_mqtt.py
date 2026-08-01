@@ -3,6 +3,7 @@
 """Holiday Skeleton single-process runtime (Home Assistant ready)."""
 import os, time, json, queue, subprocess, random, threading, re, wave, signal
 from datetime import datetime
+from urllib.parse import urlsplit, urlunsplit
 import numpy as np
 
 from holiday_skeleton.audio import SpeechGate, resample_linear_int16
@@ -20,6 +21,11 @@ from holiday_skeleton.brain import (
 from holiday_skeleton.controller import EventKind, RuntimeState, SkeletonController
 from holiday_skeleton.discovery import discovery_messages
 from holiday_skeleton.idle_life import IdleAction, IdleDecision, IdleLifeScheduler
+from holiday_skeleton.health import (
+    ComponentState,
+    HealthSnapshot,
+    RuntimeHealthMonitor,
+)
 from holiday_skeleton.speech import PiperSpeechEngine, SpeechEngineError
 
 def _safe_im(name, sub=None):
@@ -100,6 +106,14 @@ IDLE_EYE_PULSE_FRAC = float(envs("IDLE_EYE_PULSE_FRAC","0.10"))
 IDLE_EYE_PULSE_MS = float(envs("IDLE_EYE_PULSE_MS","180"))
 IDLE_JAW_TWITCH_FRAC = float(envs("IDLE_JAW_TWITCH_FRAC","0.14"))
 IDLE_JAW_TWITCH_MS = float(envs("IDLE_JAW_TWITCH_MS","160"))
+
+HEALTH_INTERVAL_SEC = float(envs("HEALTH_INTERVAL_SEC","30"))
+HEALTH_LATENCY_WINDOW = int(envs("HEALTH_LATENCY_WINDOW","20"))
+HEALTH_TEMP_WARN_C = float(envs("HEALTH_TEMP_WARN_C","75"))
+HEALTH_TEMP_CRITICAL_C = float(envs("HEALTH_TEMP_CRITICAL_C","82"))
+HEALTH_DISK_WARN_PERCENT = float(envs("HEALTH_DISK_WARN_PERCENT","90"))
+HEALTH_DISK_CRITICAL_PERCENT = float(envs("HEALTH_DISK_CRITICAL_PERCENT","97"))
+OLLAMA_HEALTHCHECK_ENABLED = envs("OLLAMA_HEALTHCHECK_ENABLED","1").strip().lower() in ("1","true","yes","on")
 
 VOSK_RATE        = int(envs("VOSK_RATE","16000"))
 SD_BLOCKSIZE     = int(envs("SD_BLOCKSIZE","1024"))
@@ -227,6 +241,7 @@ mqttc=_make_mqtt_client()
 _mqtt_connected=False
 _runtime_ready=False
 controller=None
+_health=None
 
 def mqtt_pub(topic,payload,retain=False):
     try:
@@ -236,6 +251,50 @@ def mqtt_pub_abs(topic,payload,retain=False):
     try:
         if mqttc: mqttc.publish(topic,payload,retain=retain)
     except Exception: pass
+
+def _health_set(name,state,detail="",critical=False,publish=True):
+    if _health is not None:
+        _health.set_component(name,state,detail,critical,publish=publish)
+
+def _health_latency(name,seconds):
+    if _health is not None:
+        _health.record_latency(name,seconds)
+
+def _health_increment(name,amount=1):
+    if _health is not None:
+        _health.increment(name,amount)
+
+def _publish_health_snapshot(snapshot:HealthSnapshot):
+    telemetry=snapshot.telemetry
+    mqtt_pub("health/status",snapshot.state.value,retain=True)
+    mqtt_pub("health/ok","ON" if snapshot.state.value == "healthy" else "OFF",retain=True)
+    reasons=("; ".join(snapshot.reasons) or "none")[:255]
+    mqtt_pub("health/reasons",reasons,retain=True)
+    mqtt_pub("health/components",snapshot.component_attributes_json(),retain=True)
+    mqtt_pub("health/heartbeat",str(snapshot.heartbeat),retain=True)
+    mqtt_pub("health/last_update",snapshot.timestamp,retain=True)
+    mqtt_pub("health/cpu_temperature",_metric_text(telemetry.cpu_temperature_c),retain=True)
+    mqtt_pub("health/load_1m",_metric_text(telemetry.load_1m),retain=True)
+    mqtt_pub("health/memory_percent",_metric_text(telemetry.memory_percent),retain=True)
+    mqtt_pub("health/disk_percent",_metric_text(telemetry.disk_percent),retain=True)
+    mqtt_pub("health/uptime",_metric_text(telemetry.uptime_seconds,0),retain=True)
+    mqtt_pub("health/throttled","ON" if telemetry.currently_throttled else "OFF",retain=True)
+    mqtt_pub("health/throttle_flags",",".join(telemetry.throttle_flags) or "none",retain=True)
+    mqtt_pub("health/audio_dropped_frames",str(snapshot.counters.get("audio_dropped_frames",0)),retain=True)
+    for name in ("tts_first_audio","greeting_first_audio","response_first_audio","llm_reply"):
+        metrics=snapshot.latencies.get(name)
+        mqtt_pub(f"health/latency/{name}_average",_metric_text(metrics.average if metrics else None),retain=True)
+        mqtt_pub(f"health/latency/{name}_p95",_metric_text(metrics.p95 if metrics else None),retain=True)
+        mqtt_pub(f"health/latency/{name}_samples",str(metrics.count if metrics else 0),retain=True)
+    mqtt_pub(
+        "ready",
+        "ON" if (_runtime_ready and snapshot.operational) else "OFF",
+        retain=True,
+    )
+
+def _metric_text(value,decimals=3):
+    if value is None: return "None"
+    return f"{float(value):.{int(decimals)}f}"
 
 def _enqueue(kind,payload=None,source="mqtt"):
     if controller is None:
@@ -272,6 +331,7 @@ def _on_connect(client,userdata,flags,rc,properties=None):
     global _mqtt_connected; _mqtt_connected=(rc==0)
     print(f"[mqtt] on_connect rc={rc}")
     if _mqtt_connected:
+        _health_set("mqtt",ComponentState.READY,"connected")
         mqtt_pub("availability","online",retain=True); mqtt_pub("status","starting",retain=True)
         publish_mqtt_discovery()
         subs=["say/set","eyes/dim/set","eyes/full/set","blink/set","flicker/set","volume/set",
@@ -282,10 +342,14 @@ def _on_connect(client,userdata,flags,rc,properties=None):
             except Exception as e: print("[mqtt subscribe]",e)
         mqtt_pub("ready","ON" if _runtime_ready else "OFF")
         if _idle_life is not None: _publish_idle_life_ready_state()
+        if _health is not None: _health.publish_now(sample=False)
+    else:
+        _health_set("mqtt",ComponentState.FAILED,f"connection rc={rc}")
 
 def _on_disconnect(client,userdata,rc,properties=None):
     global _mqtt_connected; _mqtt_connected=False
     print(f"[mqtt] on_disconnect rc={rc}")
+    _health_set("mqtt",ComponentState.DEGRADED,f"disconnected rc={rc}")
 
 def mqtt_connect():
     if mqttc is None: return
@@ -431,6 +495,12 @@ def _publish_barge_in_capability():
     mqtt_pub("barge_in/active","OFF",retain=True)
     mqtt_pub("barge_in/state",state,retain=True)
     mqtt_pub("barge_in/count",str(_barge_in_count),retain=True)
+    if state == "ready":
+        _health_set("barge_in",ComponentState.READY,"command monitor ready")
+    elif state == "disabled":
+        _health_set("barge_in",ComponentState.DISABLED,"disabled by configuration")
+    else:
+        _health_set("barge_in",ComponentState.DEGRADED,state)
 
 def _start_barge_in_monitor():
     if not _barge_in_supported(): return None
@@ -466,8 +536,10 @@ def _finish_barge_in_monitor(monitor):
     if monitor.error:
         print(f"[barge-in] microphone monitor failed: {monitor.error}")
         mqtt_pub("barge_in/state","error")
+        _health_set("barge_in",ComponentState.DEGRADED,f"monitor failed: {monitor.error}")
     else:
         mqtt_pub("barge_in/state","ready")
+        _health_set("barge_in",ComponentState.READY,"command monitor ready")
     if result is not None:
         _barge_in_count+=1
         _transcript_add("command",result.transcript)
@@ -511,6 +583,7 @@ def speak_phrases_with_jaw(
 
     def report_first_audio(seconds):
         mqtt_pub("tts/first_audio",f"{seconds:.3f}")
+        _health_latency("tts_first_audio",seconds)
         if first_audio is not None:
             first_audio(seconds)
 
@@ -550,6 +623,7 @@ def speak_phrases_with_jaw(
                     streaming_complete=True
                 except SpeechEngineError as e:
                     print("[TTS streaming]",e)
+                    _set_legacy_speech_health(f"streaming playback failed: {e}")
                     if e.audio_started or (controller is not None and controller.stop_event.is_set()):
                         if abort is not None: abort()
                         streaming_aborted=True
@@ -560,6 +634,7 @@ def speak_phrases_with_jaw(
                 if streaming_aborted:
                     return barge_result
                 if streaming_complete:
+                    _health_set("speech",ComponentState.READY,"warm streaming Piper",True)
                     mqtt_pub("tts/speak_time",f"{metrics.total_seconds:.3f}")
                     mqtt_pub("tts/audio_time",f"{metrics.audio_seconds:.3f}")
                     mqtt_pub("tts/cache_hit","ON" if metrics.cached_phrases else "OFF")
@@ -605,6 +680,7 @@ def _publish_llm_metrics(result):
     mqtt_pub("llm/first_phrase",f"{metrics.first_phrase_seconds:.3f}")
     mqtt_pub("llm/reply_time",f"{metrics.total_seconds:.3f}")
     mqtt_pub("llm/phrase_count",str(metrics.phrases_emitted))
+    _health_latency("llm_reply",metrics.total_seconds)
 
 def _publish_memory_turns(memory):
     mqtt_pub("llm/memory_turns",str(memory.turn_count if memory is not None else 0))
@@ -627,7 +703,9 @@ def stream_llm_reply(user_text:str,memory=None):
             yield phrase
 
     def first_audio_started(_tts_seconds):
-        mqtt_pub("llm/first_audio",f"{time.monotonic()-reply.started_at:.3f}")
+        elapsed=time.monotonic()-reply.started_at
+        mqtt_pub("llm/first_audio",f"{elapsed:.3f}")
+        _health_latency("response_first_audio",elapsed)
 
     try:
         barge_result=speak_phrases_with_jaw(
@@ -644,6 +722,9 @@ def stream_llm_reply(user_text:str,memory=None):
     _publish_llm_metrics(result)
     if result is not None and result.error:
         print("[LLM]",result.error)
+        _health_set("ollama",ComponentState.DEGRADED,f"reply failed: {result.error}")
+    elif result is not None and not result.metrics.interrupted:
+        _health_set("ollama",ComponentState.READY,f"{OLLAMA_MODEL} responding")
 
     if controller.stop_event.is_set():
         reply.cancel()
@@ -707,27 +788,33 @@ def record_once(input_index:int,capture_rate:int,timeout_s:float,stop_event=None
     utterance_deadline=None
     def cb(indata,frames,time_info,status):
         try: q.put_nowait(bytes(indata))
-        except queue.Full: pass
-    with sd.RawInputStream(samplerate=capture_rate,blocksize=SD_BLOCKSIZE,device=input_index,dtype="int16",channels=1,callback=cb):
-        while True:
-            now=time.monotonic()
-            if stop_event is not None and stop_event.is_set(): return ""
-            if not gate.speaking and now>=start_deadline: break
-            if gate.speaking and (
-                (utterance_deadline is not None and now>=utterance_deadline)
-                or gate.silence_complete(now)
-            ):
-                break
-            try: data=q.get(timeout=0.10)
-            except queue.Empty: continue
-            chunk=np.frombuffer(data,dtype=np.int16)
-            rs=resample_linear_int16(chunk,capture_rate,VOSK_RATE,rs_state)
-            gated=gate.process(rs,now)
-            if gated.speech_started:
-                utterance_deadline=now+MAX_UTTERANCE_SEC
-            if gated.audio.size and rec.AcceptWaveform(gated.audio.tobytes()):
-                txt=_recognized_text(rec.Result())
-                if txt: return txt
+        except queue.Full: _health_increment("audio_dropped_frames")
+    try:
+        stream=sd.RawInputStream(samplerate=capture_rate,blocksize=SD_BLOCKSIZE,device=input_index,dtype="int16",channels=1,callback=cb)
+        with stream:
+            while True:
+                now=time.monotonic()
+                if stop_event is not None and stop_event.is_set(): return ""
+                if not gate.speaking and now>=start_deadline: break
+                if gate.speaking and (
+                    (utterance_deadline is not None and now>=utterance_deadline)
+                    or gate.silence_complete(now)
+                ):
+                    break
+                try: data=q.get(timeout=0.10)
+                except queue.Empty: continue
+                chunk=np.frombuffer(data,dtype=np.int16)
+                rs=resample_linear_int16(chunk,capture_rate,VOSK_RATE,rs_state)
+                gated=gate.process(rs,now)
+                if gated.speech_started:
+                    utterance_deadline=now+MAX_UTTERANCE_SEC
+                if gated.audio.size and rec.AcceptWaveform(gated.audio.tobytes()):
+                    txt=_recognized_text(rec.Result())
+                    if txt: return txt
+    except Exception as e:
+        print(f"[audio] capture failed: {e}")
+        _health_set("microphone",ComponentState.FAILED,f"capture failed: {e}")
+        return ""
     return _recognized_text(rec.FinalResult())
 
 motion_enabled=True; motion_count=0
@@ -860,23 +947,95 @@ def _transcript_publish_and_clear():
     except Exception as e: print("[transcript]",e)
     _transcript=None
 
+def _init_health_monitor():
+    global _health
+    _health=RuntimeHealthMonitor(
+        publisher=_publish_health_snapshot,
+        interval_seconds=HEALTH_INTERVAL_SEC,
+        latency_window=HEALTH_LATENCY_WINDOW,
+        temperature_warning_c=HEALTH_TEMP_WARN_C,
+        temperature_critical_c=HEALTH_TEMP_CRITICAL_C,
+        disk_warning_percent=HEALTH_DISK_WARN_PERCENT,
+        disk_critical_percent=HEALTH_DISK_CRITICAL_PERCENT,
+    )
+    _health.set_component("runtime",ComponentState.STARTING,"startup checks",True,publish=False)
+    _health.set_component("system",ComponentState.STARTING,"telemetry pending",True,publish=False)
+    _health.set_component("mqtt",ComponentState.STARTING,"connection pending",False,publish=False)
+    _health.set_component("speech",ComponentState.STARTING,"Piper warmup pending",True,publish=False)
+    _health.set_component("ollama",ComponentState.STARTING,"model warmup pending",False,publish=False)
+    _health.set_component(
+        "microphone",
+        ComponentState.READY if stt_enabled and in_idx is not None else ComponentState.FAILED,
+        in_name if stt_enabled and in_idx is not None else "Vosk or input device unavailable",
+        False,
+        publish=False,
+    )
+    _health.set_component(
+        "animation",
+        ComponentState.READY if _pca is not None and _eyes_ch is not None and _jaw is not None else ComponentState.FAILED,
+        "PCA9685, eyes, and jaw ready" if _pca is not None and _eyes_ch is not None and _jaw is not None else "PCA9685 animation unavailable",
+        False,
+        publish=False,
+    )
+    _health.set_component(
+        "motion",
+        ComponentState.FAILED if isinstance(pir,_DummyPIR) else ComponentState.READY,
+        "PIR unavailable; MQTT trigger remains available" if isinstance(pir,_DummyPIR) else "PIR ready",
+        False,
+        publish=False,
+    )
+    if OLLAMA_HEALTHCHECK_ENABLED and requests is not None:
+        _health.add_probe("ollama",_probe_ollama,critical=False)
+
+def _ollama_health_url():
+    parsed=urlsplit(OLLAMA_URL)
+    return urlunsplit((parsed.scheme,parsed.netloc,"/api/tags","",""))
+
+def _probe_ollama():
+    if requests is None:
+        return ComponentState.FAILED,"requests unavailable"
+    response=requests.get(_ollama_health_url(),timeout=(1,2))
+    response.raise_for_status()
+    data=response.json()
+    models=data.get("models",[]) if isinstance(data,dict) else []
+    names={
+        str(item.get("name") or item.get("model") or "")
+        for item in models
+        if isinstance(item,dict)
+    }
+    if OLLAMA_MODEL not in names:
+        return ComponentState.DEGRADED,f"Ollama ready; {OLLAMA_MODEL} not listed"
+    return ComponentState.READY,f"{OLLAMA_MODEL} ready"
+
 def _do_mqtt_connect():
     if mqttc is not None:
         mqtt_connect()
         mqtt_pub("llm/memory_turns","0")
+        if not _mqtt_connected:
+            _health_set("mqtt",ComponentState.FAILED,"connection unavailable")
+    else:
+        _health_set("mqtt",ComponentState.FAILED,"MQTT client unavailable")
 
 def _warm_ollama():
-    if not requests: return
+    if not requests:
+        _health_set("ollama",ComponentState.FAILED,"requests unavailable")
+        return False
     try:
-        requests.post(OLLAMA_URL,json={"model":OLLAMA_MODEL,"messages":[{"role":"user","content":"warming"}],"stream":False,
+        response=requests.post(OLLAMA_URL,json={"model":OLLAMA_MODEL,"messages":[{"role":"user","content":"warming"}],"stream":False,
                                        "keep_alive":KEEP_ALIVE,"options":{"num_predict":1}},timeout=(2,10))
+        response.raise_for_status()
+        _health_set("ollama",ComponentState.READY,f"{OLLAMA_MODEL} warm")
+        return True
     except Exception as e:
         print("[ollama warmup]",e)
+        _health_set("ollama",ComponentState.FAILED,f"warmup failed: {e}")
+        return False
 
 def _init_llm_client():
     global _llm_client
     if requests is None:
         print("[LLM] requests unavailable; using spoken fallback")
+        _health_set("ollama",ComponentState.FAILED,"requests unavailable")
         return
     _llm_client=OllamaStreamingClient(
         http_client=requests,
@@ -896,6 +1055,15 @@ def _configured_output_device():
     try: return int(AUDIO_OUTPUT_DEVICE)
     except ValueError: return AUDIO_OUTPUT_DEVICE
 
+def _legacy_piper_available():
+    return os.path.isfile(PIPER_BIN) and os.access(PIPER_BIN,os.X_OK) and os.path.isfile(PIPER_MODEL)
+
+def _set_legacy_speech_health(detail):
+    if _legacy_piper_available():
+        _health_set("speech",ComponentState.DEGRADED,f"legacy Piper: {detail}",True)
+    else:
+        _health_set("speech",ComponentState.FAILED,f"streaming and legacy Piper unavailable: {detail}",True)
+
 def _init_speech_engine():
     global _speech_engine
     if sd is None:
@@ -903,6 +1071,7 @@ def _init_speech_engine():
         mqtt_pub("tts/engine","legacy",retain=True)
         mqtt_pub("tts/cache_state","legacy",retain=True)
         mqtt_pub("tts/cache_entries","0",retain=True)
+        _set_legacy_speech_health("sounddevice unavailable")
         return
     started=time.monotonic()
     try:
@@ -921,6 +1090,7 @@ def _init_speech_engine():
         warmup_seconds=_speech_engine.warm_up()
         elapsed=loaded_at-started
         mqtt_pub("tts/engine","streaming",retain=True)
+        _health_set("speech",ComponentState.READY,"warm streaming Piper",True)
         mqtt_pub("tts/model_load_time",f"{elapsed:.3f}",retain=True)
         mqtt_pub("tts/warmup_time",f"{warmup_seconds:.3f}",retain=True)
         if TTS_CANNED_CACHE:
@@ -954,6 +1124,7 @@ def _init_speech_engine():
         mqtt_pub("tts/cache_state","legacy",retain=True)
         mqtt_pub("tts/cache_entries","0",retain=True)
         print(f"[TTS] warm engine unavailable; using legacy Piper process: {e}")
+        _set_legacy_speech_health(str(e))
 
 def _idle_life_ready_state():
     if _idle_life is None: return "starting"
@@ -1055,6 +1226,8 @@ def _snooze_idle_life():
 
 def _runtime_state_changed(state):
     mqtt_pub("status",state.value,retain=True)
+    if state is RuntimeState.ERROR:
+        _health_set("runtime",ComponentState.FAILED,"controller error",True)
     if state in (RuntimeState.GREETING,RuntimeState.SPEAKING):
         eyes_speak()
     elif state in (RuntimeState.LISTENING,RuntimeState.THINKING):
@@ -1110,12 +1283,13 @@ def _manual_trigger():
         _transcript_add("assistant",opener)
         controller.set_state(RuntimeState.GREETING)
         greeting_started=time.monotonic()
+        def greeting_first_audio(_seconds):
+            elapsed=time.monotonic()-greeting_started
+            mqtt_pub("tts/greeting_first_audio",f"{elapsed:.3f}")
+            _health_latency("greeting_first_audio",elapsed)
         barge_result=speak_with_jaw(
             opener,
-            first_audio=lambda _seconds: mqtt_pub(
-                "tts/greeting_first_audio",
-                f"{time.monotonic()-greeting_started:.3f}",
-            ),
+            first_audio=greeting_first_audio,
         )
         if not _barge_in_ends_visit(barge_result):
             _conversation_loop(memory)
@@ -1173,6 +1347,12 @@ def _cleanup():
     global _runtime_ready
     _runtime_ready=False
     _cancel_motion_timer()
+    try:
+        if _health is not None:
+            _health.set_component("runtime",ComponentState.STOPPING,"service stopping",True,publish=False)
+            _health.publish_now(sample=False)
+            _health.stop()
+    except Exception: pass
     try: _transcript_publish_and_clear()
     except Exception: pass
     try: mqtt_pub("ready","OFF",retain=True)
@@ -1210,6 +1390,7 @@ def main():
     )
     signal.signal(signal.SIGINT,_signal_handler)
     signal.signal(signal.SIGTERM,_signal_handler)
+    _init_health_monitor()
     _do_mqtt_connect()
     _init_speech_engine()
     _init_llm_client()
@@ -1217,12 +1398,15 @@ def main():
     _publish_barge_in_capability()
     _init_idle_life()
     _runtime_ready=True
-    mqtt_pub("ready","ON",retain=True)
+    _health_set("runtime",ComponentState.READY,"controller ready",True,publish=False)
+    if _health is not None: _health.start()
+    else: mqtt_pub("ready","ON",retain=True)
     print("👀 Waiting for motion or MQTT commands…")
     try:
         controller.run_forever()
     except Exception as e:
         print("[controller]",e)
+        _health_set("runtime",ComponentState.FAILED,str(e),True)
         controller.request_stop("controller-error")
         raise
     finally:

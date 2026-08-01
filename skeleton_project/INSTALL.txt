@@ -30,7 +30,7 @@ sudo journalctl -u holiday-skeleton -f
 ## 3) Home Assistant
 # (optional) clear out old retained discovery for this device
 cd scripts
-export MQTT_HOST=192.168.68.70
+export MQTT_HOST=<broker-ip>
 export MQTT_USER=<Username>
 export MQTT_PASS='your!pass'
 ./nuke_discovery.sh skeleton
@@ -66,6 +66,10 @@ pip install paho-mqtt
 - IDLE_LIFE_ENABLED=1 adds sparse eye pulses, jaw twitches, and occasional mutters while motion is armed.
 - IDLE_LIFE_MIN_SEC / MAX_SEC control cadence; IDLE_MUTTER_CHANCE controls how often an action speaks.
 - Idle actions yield immediately to PIR, MQTT, shutdown, and barge-in. Legacy TTS safely skips mutters.
+- HEALTH_INTERVAL_SEC=30 publishes component health, Pi telemetry, and latency statistics without blocking audio.
+- HEALTH_LATENCY_WINDOW=20 controls the recent-turn rolling average/P95 window.
+- CPU temperature, disk use, current throttle flags, Piper availability, and Ollama are evaluated automatically.
+- OLLAMA_HEALTHCHECK_ENABLED=0 disables the periodic /api/tags probe without disabling conversation replies.
 - EYES_INVERT=1 if your LED driver is active-low.
 - JAW_MIN_US/JAW_MAX_US to set jaw travel.
 - Eyes Dim/Full % and Volume % are "number" controls in HA with box entry.
@@ -101,3 +105,7 @@ sudo journalctl -u holiday-skeleton -f
 # Leave it idle and confirm idle_life/state changes ready -> running -> ready.
 # During a mutter, trigger motion and confirm audio stops, the jaw rests, the
 # interrupted count increments, and the visitor greeting starts next.
+# Confirm health/status becomes healthy (or degraded with a specific reason),
+# health/heartbeat advances, CPU temperature is numeric, and audio dropped
+# frames remains zero. Stop Ollama briefly and verify health becomes degraded
+# while the local spoken fallback remains available, then recovers on restart.
