@@ -24,3 +24,8 @@ Environment="MAX_UTTERANCE_SEC=12.0"
 # Leave empty to use the system default output.
 Environment="AUDIO_OUTPUT_DEVICE="
 Environment="TTS_FRAME_MS=20"
+
+# Streamed Ollama text is split on punctuation, then bounded by character count.
+Environment="LLM_PHRASE_MIN_CHARS=12"
+Environment="LLM_PHRASE_SOFT_CHARS=36"
+Environment="LLM_PHRASE_MAX_CHARS=72"

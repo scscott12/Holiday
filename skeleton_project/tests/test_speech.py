@@ -120,6 +120,21 @@ class PiperSpeechEngineTests(unittest.TestCase):
         self.assertEqual(self.audio.stream.started, 3)
         self.assertEqual(self.jaw[-1], 0.25)
 
+    def test_phrase_stream_keeps_output_open_and_reports_one_first_audio(self):
+        engine = self.make_engine([FakeChunk(np.full(20, 1000))])
+        first_audio = []
+
+        metrics = engine.speak_phrases(
+            iter(["First phrase.", "Second phrase."]),
+            first_audio=first_audio.append,
+        )
+
+        self.assertEqual(self.voice.calls, ["First phrase.", "Second phrase."])
+        self.assertEqual(metrics.phrases_spoken, 2)
+        self.assertEqual(metrics.frames_written, 4)
+        self.assertEqual(len(first_audio), 1)
+        self.assertEqual(self.audio.stream.started, 2)
+
     def test_warm_up_materializes_audio_without_playing_it(self):
         engine = self.make_engine([FakeChunk(np.full(20, 1000))])
 

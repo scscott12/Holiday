@@ -6,6 +6,7 @@ from datetime import datetime
 import numpy as np
 
 from holiday_skeleton.audio import SpeechGate
+from holiday_skeleton.brain import OllamaStreamingClient
 from holiday_skeleton.controller import EventKind, RuntimeState, SkeletonController
 from holiday_skeleton.discovery import discovery_messages
 from holiday_skeleton.speech import PiperSpeechEngine, SpeechEngineError
@@ -88,6 +89,9 @@ OLLAMA_MODEL = envs("OLLAMA_MODEL","qwen2.5:0.5b")
 KEEP_ALIVE   = envs("KEEP_ALIVE","24h")
 OLLAMA_TIMEOUT = (3, 30)
 OLLAMA_OPTS  = {"num_predict": 50, "num_thread": 4, "temperature": 0.6, "repeat_penalty": 1.05, "num_ctx": 128}
+LLM_PHRASE_MIN_CHARS = int(envs("LLM_PHRASE_MIN_CHARS","12"))
+LLM_PHRASE_SOFT_CHARS = int(envs("LLM_PHRASE_SOFT_CHARS","36"))
+LLM_PHRASE_MAX_CHARS = int(envs("LLM_PHRASE_MAX_CHARS","72"))
 VOLUME       = float(envs("VOLUME","1.0"))
 
 SYSTEM_PROMPT = (
@@ -324,6 +328,7 @@ def speak_wav_play(path:str):
 
 _speech_lock=threading.Lock()
 _speech_engine=None
+_llm_client=None
 
 def _legacy_speak_with_jaw(text:str):
     """Compatibility path for installs that have not added piper-tts yet."""
@@ -341,41 +346,111 @@ def _legacy_speak_with_jaw(text:str):
     (jaw_chatter_fallback(text) if float(np.max(env) if env.size else 0.0)<0.05 else jaw_drive_by_env(env))
     t.join()
 
-def speak_with_jaw(text:str):
-    if not text: return
+def speak_phrases_with_jaw(phrases,first_audio=None,abort=None):
+    """Speak an iterable without releasing the output stream between phrases."""
+    speaking=False
+    seen=[]
+
+    def report_first_audio(seconds):
+        mqtt_pub("tts/first_audio",f"{seconds:.3f}")
+        if first_audio is not None:
+            first_audio(seconds)
+
+    def marked_phrases():
+        nonlocal speaking
+        for phrase in phrases:
+            phrase=str(phrase).strip()
+            if not phrase: continue
+            seen.append(phrase)
+            if not speaking:
+                speaking=True
+                mqtt_pub("speaking","ON")
+            yield phrase
+
     with _speech_lock:
-        mqtt_pub("speaking","ON")
+        marked=marked_phrases()
         try:
             if _speech_engine is not None:
                 try:
-                    metrics=_speech_engine.speak(
-                        text,
+                    metrics=_speech_engine.speak_phrases(
+                        marked,
                         stop_event=controller.stop_event if controller is not None else None,
-                        first_audio=lambda seconds: mqtt_pub("tts/first_audio",f"{seconds:.3f}"),
+                        first_audio=report_first_audio,
                     )
                     mqtt_pub("tts/speak_time",f"{metrics.total_seconds:.3f}")
                     mqtt_pub("tts/audio_time",f"{metrics.audio_seconds:.3f}")
-                    return
+                    return metrics
                 except SpeechEngineError as e:
                     print("[TTS streaming]",e)
                     if e.audio_started or (controller is not None and controller.stop_event.is_set()):
+                        if abort is not None: abort()
                         return
-            _legacy_speak_with_jaw(text)
+                    for phrase in seen:
+                        _legacy_speak_with_jaw(phrase)
+            for phrase in marked:
+                _legacy_speak_with_jaw(phrase)
         finally:
             _jaw_set(JAW_REST_FRAC)
-            mqtt_pub("speaking","OFF")
+            if speaking:
+                mqtt_pub("speaking","OFF")
 
-def llm_reply(user_text:str)->str:
-    payload={"model":OLLAMA_MODEL,"prompt":user_text,"system":SYSTEM_PROMPT,
-             "stream":False,"keep_alive":KEEP_ALIVE,"options":OLLAMA_OPTS}
+def speak_with_jaw(text:str):
+    if not text: return None
+    return speak_phrases_with_jaw([text])
+
+def _publish_llm_metrics(result):
+    if result is None: return
+    metrics=result.metrics
+    mqtt_pub("llm/first_token",f"{metrics.first_token_seconds:.3f}")
+    mqtt_pub("llm/first_phrase",f"{metrics.first_phrase_seconds:.3f}")
+    mqtt_pub("llm/reply_time",f"{metrics.total_seconds:.3f}")
+    mqtt_pub("llm/phrase_count",str(metrics.phrases_emitted))
+
+def stream_llm_reply(user_text:str)->str:
+    fallback="Arrr, I be old and forgetful — say it again, matey!"
+    if _llm_client is None:
+        controller.set_state(RuntimeState.SPEAKING)
+        speak_with_jaw(fallback)
+        return fallback
+
+    reply=_llm_client.start_reply(user_text,controller.stop_event)
+    delivered=[]
+
+    def phrases():
+        for phrase in reply:
+            if not delivered:
+                controller.set_state(RuntimeState.SPEAKING)
+            delivered.append(phrase)
+            yield phrase
+
+    def first_audio_started(_tts_seconds):
+        mqtt_pub("llm/first_audio",f"{time.monotonic()-reply.started_at:.3f}")
+
     try:
-        start=time.monotonic()
-        r=requests.post(OLLAMA_URL,json=payload,timeout=OLLAMA_TIMEOUT); r.raise_for_status()
-        elapsed=time.monotonic()-start; txt=(r.json().get("response") or "").strip().split("\n")[0].strip()
-        mqtt_pub("llm/reply_time",f"{elapsed:.2f}")
-        return txt or "Arrr, me brain’s foggy — try that again."
+        speak_phrases_with_jaw(
+            phrases(),
+            first_audio=first_audio_started,
+            abort=reply.cancel,
+        )
     except Exception as e:
-        print("[LLM]",e); return "Arrr, I be old and forgetful — say it again, matey!"
+        print("[LLM speech pipeline]",e)
+        reply.cancel()
+
+    result=reply.result or reply.wait(timeout=0.25)
+    _publish_llm_metrics(result)
+    if result is not None and result.error:
+        print("[LLM]",result.error)
+
+    if controller.stop_event.is_set():
+        reply.cancel()
+        return result.text if result is not None else ""
+
+    if not delivered:
+        controller.set_state(RuntimeState.SPEAKING)
+        speak_with_jaw(fallback)
+        return fallback
+
+    return (result.text if result is not None else " ".join(delivered)).strip()
 
 stt_enabled=True; _VOSK_MODEL=None
 if vosk is None:
@@ -592,6 +667,24 @@ def _warm_ollama():
     except Exception as e:
         print("[ollama warmup]",e)
 
+def _init_llm_client():
+    global _llm_client
+    if requests is None:
+        print("[LLM] requests unavailable; using spoken fallback")
+        return
+    _llm_client=OllamaStreamingClient(
+        http_client=requests,
+        url=OLLAMA_URL,
+        model=OLLAMA_MODEL,
+        system_prompt=SYSTEM_PROMPT,
+        keep_alive=KEEP_ALIVE,
+        options=OLLAMA_OPTS,
+        timeout=OLLAMA_TIMEOUT,
+        minimum_phrase_chars=LLM_PHRASE_MIN_CHARS,
+        soft_phrase_chars=LLM_PHRASE_SOFT_CHARS,
+        maximum_phrase_chars=LLM_PHRASE_MAX_CHARS,
+    )
+
 def _configured_output_device():
     if AUDIO_OUTPUT_DEVICE is None: return None
     try: return int(AUDIO_OUTPUT_DEVICE)
@@ -664,11 +757,9 @@ def _conversation_loop():
         if EXIT_RE.search(text):
             _say_goodbye(); return
         controller.set_state(RuntimeState.THINKING)
-        reply=llm_reply(text)
+        reply=stream_llm_reply(text)
         if controller.stop_event.is_set(): return
         _transcript_add("assistant",reply)
-        controller.set_state(RuntimeState.SPEAKING)
-        speak_with_jaw(reply)
 
 _last_talk=0.0
 def _manual_trigger():
@@ -760,6 +851,7 @@ def main():
     signal.signal(signal.SIGTERM,_signal_handler)
     _do_mqtt_connect()
     _init_speech_engine()
+    _init_llm_client()
     _warm_ollama()
     print("👀 Waiting for motion or MQTT commands…")
     try:

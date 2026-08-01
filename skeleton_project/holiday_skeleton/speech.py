@@ -19,6 +19,7 @@ class SpeechMetrics:
     audio_seconds: float
     frames_written: int
     interrupted: bool = False
+    phrases_spoken: int = 0
 
 
 class SpeechEngineError(RuntimeError):
@@ -190,70 +191,109 @@ class PiperSpeechEngine:
         if not text:
             return SpeechMetrics(0.0, 0.0, 0.0, 0)
 
+        return self.speak_phrases(
+            [text],
+            stop_event=stop_event,
+            first_audio=first_audio,
+        )
+
+    def speak_phrases(
+        self,
+        phrases: Iterable[str],
+        stop_event: Optional[threading.Event] = None,
+        first_audio: Optional[Callable[[float], None]] = None,
+    ) -> SpeechMetrics:
+        """Play phrases as they arrive while keeping one output stream open.
+
+        The iterable may block while an LLM produces its next phrase.  Only
+        active Piper synthesis/playback is included in ``total_seconds``; time
+        waiting on the iterable is intentionally excluded.
+        """
+
         with self._lock:
             if self._closed:
                 raise SpeechEngineError("speech engine is closed")
 
-            started_at = self.clock()
-            first_audio_at: Optional[float] = None
+            first_audio_seconds = 0.0
+            active_seconds = 0.0
             samples_written = 0
             frames_written = 0
+            phrases_spoken = 0
             interrupted = False
 
             try:
-                chunks: Iterable[Any] = self.voice.synthesize(text)
-                for chunk in chunks:
-                    if int(chunk.sample_width) != 2:
-                        raise ValueError(f"unsupported Piper sample width: {chunk.sample_width}")
-                    if int(chunk.sample_channels) != 1:
-                        raise ValueError(f"unsupported Piper channel count: {chunk.sample_channels}")
-                    if int(chunk.sample_rate) != self.sample_rate:
-                        raise ValueError(
-                            f"Piper sample rate changed from {self.sample_rate} to {chunk.sample_rate}"
-                        )
+                for text in phrases:
+                    text = str(text).strip()
+                    if not text:
+                        continue
+                    if stop_event is not None and stop_event.is_set():
+                        interrupted = True
+                        break
 
-                    frames = split_pcm16_frames(
-                        chunk.audio_int16_bytes,
-                        sample_rate=self.sample_rate,
-                        channels=1,
-                        frame_ms=self.frame_ms,
-                    )
-                    levels = jaw_envelope(frames)
-                    for frame, level in zip(frames, levels):
-                        if stop_event is not None and stop_event.is_set():
-                            interrupted = True
+                    phrase_started_at = self.clock()
+                    phrase_audio_started = False
+                    chunks: Iterable[Any] = self.voice.synthesize(text)
+                    for chunk in chunks:
+                        if int(chunk.sample_width) != 2:
+                            raise ValueError(f"unsupported Piper sample width: {chunk.sample_width}")
+                        if int(chunk.sample_channels) != 1:
+                            raise ValueError(f"unsupported Piper channel count: {chunk.sample_channels}")
+                        if int(chunk.sample_rate) != self.sample_rate:
+                            raise ValueError(
+                                f"Piper sample rate changed from {self.sample_rate} to {chunk.sample_rate}"
+                            )
+
+                        frames = split_pcm16_frames(
+                            chunk.audio_int16_bytes,
+                            sample_rate=self.sample_rate,
+                            channels=1,
+                            frame_ms=self.frame_ms,
+                        )
+                        levels = jaw_envelope(frames)
+                        for frame, level in zip(frames, levels):
+                            if stop_event is not None and stop_event.is_set():
+                                interrupted = True
+                                break
+
+                            jaw_fraction = self.rest_fraction + (
+                                self.maximum_fraction - self.rest_fraction
+                            ) * float(level)
+                            self.jaw_set(jaw_fraction)
+                            self._stream.write(scale_pcm16(frame, self.volume_getter()))
+                            frames_written += 1
+                            samples_written += len(frame) // 2
+
+                            if not phrase_audio_started:
+                                phrase_audio_started = True
+                                if phrases_spoken == 0:
+                                    first_audio_seconds = self.clock() - phrase_started_at
+                                    if first_audio is not None:
+                                        first_audio(first_audio_seconds)
+
+                        if interrupted:
                             break
 
-                        jaw_fraction = self.rest_fraction + (
-                            self.maximum_fraction - self.rest_fraction
-                        ) * float(level)
-                        self.jaw_set(jaw_fraction)
-                        self._stream.write(scale_pcm16(frame, self.volume_getter()))
-                        frames_written += 1
-                        samples_written += len(frame) // 2
-
-                        if first_audio_at is None:
-                            first_audio_at = self.clock()
-                            if first_audio is not None:
-                                first_audio(first_audio_at - started_at)
-
+                    active_seconds += self.clock() - phrase_started_at
+                    if phrase_audio_started:
+                        phrases_spoken += 1
+                    self.jaw_set(self.rest_fraction)
                     if interrupted:
                         break
             except Exception as error:
                 raise SpeechEngineError(
-                    str(error), audio_started=first_audio_at is not None
+                    str(error), audio_started=frames_written > 0
                 ) from error
             finally:
                 self.jaw_set(self.rest_fraction)
                 self._restart_stream(interrupted)
 
-            finished_at = self.clock()
             return SpeechMetrics(
-                first_audio_seconds=(first_audio_at - started_at) if first_audio_at else 0.0,
-                total_seconds=finished_at - started_at,
+                first_audio_seconds=first_audio_seconds,
+                total_seconds=active_seconds,
                 audio_seconds=samples_written / float(self.sample_rate),
                 frames_written=frames_written,
                 interrupted=interrupted,
+                phrases_spoken=phrases_spoken,
             )
 
     def close(self) -> None:

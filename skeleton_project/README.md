@@ -11,6 +11,7 @@ skeleton_all_in_one_mqtt.py  service composition and hardware integrations
 holiday_skeleton/
   controller.py              event queue and runtime states
   audio.py                   preroll, speech gate, and endpoint timing
+  brain.py                   Ollama stream producer and phrase assembly
   speech.py                  warm Piper voice, PCM playback, and jaw envelope
   discovery.py               shared Home Assistant MQTT definitions
 tests/                       hardware-free unit tests
@@ -63,6 +64,9 @@ views:
           - binary_sensor.skeleton_speaking
           - sensor.skeleton_status
           - sensor.skeleton_reply_time
+          - sensor.skeleton_llm_first_token
+          - sensor.skeleton_llm_first_phrase
+          - sensor.skeleton_response_first_audio
           - sensor.skeleton_tts_engine
           - sensor.skeleton_tts_first_audio
           - sensor.skeleton_transcript
@@ -97,6 +101,9 @@ Environment="END_SILENCE_SEC=0.75"
 Environment="MAX_UTTERANCE_SEC=12.0"
 Environment="AUDIO_OUTPUT_DEVICE="
 Environment="TTS_FRAME_MS=20"
+Environment="LLM_PHRASE_MIN_CHARS=12"
+Environment="LLM_PHRASE_SOFT_CHARS=36"
+Environment="LLM_PHRASE_MAX_CHARS=72"
 ```
 
 Speech timing is split into three controls:
@@ -131,6 +138,22 @@ sudo journalctl -u holiday-skeleton -f
 ```
 
 Startup should log `Piper voice warm and output stream ready`. If it logs `using legacy Piper process`, verify the `piper-tts` install, `PIPER_MODEL`, its adjacent `.onnx.json` file, and the configured output device.
+
+## Low-latency replies
+
+Ollama now returns newline-delimited streaming chunks. A background producer keeps reading those chunks while the controller speaks completed clauses through the warm Piper engine. This overlaps the remaining LLM generation with audio playback without giving a background thread access to the eyes, jaw, microphone, or speaker.
+
+Phrase boundaries prefer sentence punctuation, then commas/semicolons after `LLM_PHRASE_SOFT_CHARS`, and finally a word boundary at `LLM_PHRASE_MAX_CHARS`. The defaults are intentionally conservative so speech sounds natural. Lower the soft/max values slightly if first audio is still slow; raise them if the voice sounds too fragmented. Keep `MIN <= SOFT <= MAX`.
+
+Home Assistant reports each layer separately:
+
+- `sensor.skeleton_llm_first_token`: request to Ollama's first non-empty text chunk.
+- `sensor.skeleton_llm_first_phrase`: request to the first speakable phrase.
+- `sensor.skeleton_response_first_audio`: request to the first PCM frame written to the speaker.
+- `sensor.skeleton_reply_time`: total Ollama generation time, which can finish while Piper is already speaking.
+- `sensor.skeleton_tts_first_audio`: first-phrase Piper synthesis latency only.
+
+The full generated response is retained for the transcript even though it is spoken in several phrases. If Ollama fails before producing a phrase, the skeleton speaks its local fallback line.
 
 ## Checks
 
