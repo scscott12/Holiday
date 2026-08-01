@@ -18,13 +18,14 @@ holiday_skeleton/
   personality.py             validated character packs and bounded settings
   scene.py                   validated scene files, cue loading, and bounded runner
   settings.py                atomic non-sensitive operator-state persistence
+  self_test.py               bounded manual output verification
   speech.py                  warm Piper voice, PCM playback, and jaw envelope
   watchdog.py                native systemd readiness and hang recovery
   discovery.py               shared Home Assistant MQTT definitions
 tests/                       hardware-free unit tests
 ```
 
-Runtime states published to `holiday/skeleton/status` are `starting`, `idle`, `idle_life`, `scene`, `greeting`, `listening`, `thinking`, `speaking`, `effect`, `cooldown`, `stopping`, and `error`.
+Runtime states published to `holiday/skeleton/status` are `starting`, `idle`, `idle_life`, `scene`, `self_test`, `greeting`, `listening`, `thinking`, `speaking`, `effect`, `cooldown`, `stopping`, and `error`.
 
 ## Hardware (quick)
 - **Raspberry Pi** (Bookworm OK)
@@ -64,6 +65,8 @@ views:
           - entity: number.skeleton_volume
           - entity: select.skeleton_personality
           - entity: button.skeleton_play_personality_scene
+          - entity: button.skeleton_run_self_test
+          - entity: button.skeleton_stop_self_test
           - entity: button.skeleton_blink
           - entity: button.skeleton_flicker
           - entity: text.skeleton_say
@@ -86,6 +89,11 @@ views:
           - sensor.skeleton_saved_settings_state
           - sensor.skeleton_settings_last_saved
           - sensor.skeleton_settings_last_error
+          - binary_sensor.skeleton_self_test_active
+          - sensor.skeleton_self_test_state
+          - sensor.skeleton_self_test_step
+          - sensor.skeleton_self_test_last_result
+          - sensor.skeleton_self_test_last_error
           - sensor.skeleton_status
           - sensor.skeleton_reply_time
           - sensor.skeleton_llm_first_token
@@ -156,6 +164,12 @@ Environment="HEALTH_LATENCY_WINDOW=20"
 Environment="HEALTH_TEMP_WARN_C=75"
 Environment="HEALTH_TEMP_CRITICAL_C=82"
 Environment="OLLAMA_HEALTHCHECK_ENABLED=1"
+Environment="SELF_TEST_ENABLED=1"
+Environment="SELF_TEST_MAX_SECONDS=12"
+Environment="SELF_TEST_EYES_FRAC=0.25"
+Environment="SELF_TEST_JAW_FRAC=0.20"
+Environment="SELF_TEST_STEP_SEC=0.35"
+Environment="SELF_TEST_LINE=Systems awake and ready."
 Environment="SPEECH_START_TIMEOUT=10.0"
 Environment="END_SILENCE_SEC=0.75"
 Environment="MAX_UTTERANCE_SEC=12.0"
@@ -357,6 +371,27 @@ Configuration:
 - `OLLAMA_HEALTHCHECK_ENABLED`: set to `0` to disable only the periodic `/api/tags` probe.
 
 The monitor uses standard Linux files and the optional Raspberry Pi [`vcgencmd get_throttled`](https://www.raspberrypi.com/documentation/computers/os.html#get_throttled) command, so it adds no Python dependency. Historical throttle flags remain visible even after the immediate condition clears; only current throttle bits degrade health.
+
+## Operator self-test
+
+The **Run Self-Test** Home Assistant button verifies the installed output path without waiting for a visitor. It is manual-only and accepted only while the controller is idle or in cooldown. The serialized controller performs, in order:
+
+1. two eye pulses capped at 35% brightness;
+2. two jaw movements capped at 35% of configured travel;
+3. one cached line through the interruptible streaming Piper path.
+
+This confirms that commands reach the PCA9685 eye channel, jaw servo, and live speaker path. It cannot visually or acoustically judge the physical result, so the operator still observes the skeleton while the test runs. A missing output is marked `skipped` and produces a `degraded` result; a hardware write error produces `failed`. The structured per-step report is attached to `sensor.skeleton_self_test_last_result`.
+
+PIR activity, any other subscribed MQTT command, **Stop Self-Test**, shutdown, or a spoken barge-in command during the speaker step interrupts the sequence. The jaw always returns to its configured rest position and the eyes return to idle. Legacy Piper is reported as a skipped speaker step because its temporary WAV playback cannot be stopped within the existing 20 ms safety boundary. The self-test never starts automatically during service or Pi startup.
+
+Configuration:
+
+- `SELF_TEST_ENABLED`: enables the manual controls; default `1`.
+- `SELF_TEST_MAX_SECONDS`: hard runtime bound from `1` to `60` seconds; default `12`.
+- `SELF_TEST_EYES_FRAC`: requested eye level, clamped to `5–35%` and further capped by night mode.
+- `SELF_TEST_JAW_FRAC`: requested portion of configured jaw travel, clamped to `5–35%`.
+- `SELF_TEST_STEP_SEC`: hold time for each pulse/movement, clamped to `0.10–1.0` seconds.
+- `SELF_TEST_LINE`: short speaker verification phrase, included in the canned-speech cache.
 
 ## systemd hang recovery
 

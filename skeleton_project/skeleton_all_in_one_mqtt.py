@@ -3,7 +3,7 @@
 """Holiday Skeleton single-process runtime (Home Assistant ready)."""
 import os, time, json, queue, subprocess, random, threading, re, wave, signal, math
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 import numpy as np
 
@@ -45,6 +45,12 @@ from holiday_skeleton.settings import (
     OperatorSettings,
     OperatorSettingsStore,
     SettingsConfigError,
+)
+from holiday_skeleton.self_test import (
+    SelfTestInterrupted,
+    SelfTestRunner,
+    SelfTestStep,
+    SelfTestStepSkipped,
 )
 from holiday_skeleton.speech import PiperSpeechEngine, SpeechEngineError
 from holiday_skeleton.watchdog import (
@@ -156,6 +162,13 @@ HEALTH_DISK_CRITICAL_PERCENT = float(envs("HEALTH_DISK_CRITICAL_PERCENT","97"))
 OLLAMA_HEALTHCHECK_ENABLED = envs("OLLAMA_HEALTHCHECK_ENABLED","1").strip().lower() in ("1","true","yes","on")
 WATCHDOG_CONTROLLER_STALE_SEC = float(envs("WATCHDOG_CONTROLLER_STALE_SEC","45"))
 
+SELF_TEST_ENABLED = envs("SELF_TEST_ENABLED","1").strip().lower() in ("1","true","yes","on")
+SELF_TEST_MAX_SECONDS = float(envs("SELF_TEST_MAX_SECONDS","12"))
+SELF_TEST_EYES_FRAC = float(envs("SELF_TEST_EYES_FRAC","0.25"))
+SELF_TEST_JAW_FRAC = float(envs("SELF_TEST_JAW_FRAC","0.20"))
+SELF_TEST_STEP_SEC = float(envs("SELF_TEST_STEP_SEC","0.35"))
+SELF_TEST_LINE = envs("SELF_TEST_LINE","Systems awake and ready.").strip()[:160]
+
 VOSK_RATE        = int(envs("VOSK_RATE","16000"))
 SD_BLOCKSIZE     = int(envs("SD_BLOCKSIZE","1024"))
 ENERGY_GATE      = float(envs("ENERGY_GATE","180"))
@@ -259,6 +272,18 @@ _settings_last_saved="never"
 _settings_last_error="none"
 _settings_save_count=0
 
+_self_test_runner=None
+_self_test_active=False
+_self_test_pending=False
+_self_test_cancel_pending=False
+_self_test_step="none"
+_self_test_last_result="never"
+_self_test_last_error="none"
+_self_test_last_run="never"
+_self_test_count=0
+_self_test_interrupted=0
+_self_test_report="{}"
+
 def pick_opening_line()->str:
     hr=datetime.now().hour
     if 5<=hr<12: return random.choice(MORNING_LINES)
@@ -307,6 +332,8 @@ def _canned_speech_lines(pack=None):
             for step in _scene_library.get(scene_name).steps
             if step.action is SceneAction.SPEAK
         )
+    if SELF_TEST_ENABLED and SELF_TEST_LINE:
+        configured.append(SELF_TEST_LINE)
     return list(dict.fromkeys(configured))
 
 def _personality_names():
@@ -450,6 +477,14 @@ def _enqueue(kind,payload=None,source="mqtt"):
 
 def _on_message(client,userdata,msg):
     t=msg.topic; p=msg.payload.decode("utf-8","ignore").strip()
+    if t.endswith("/self_test/run/set"):
+        _request_self_test()
+        return
+    if t.endswith("/self_test/stop/set"):
+        _stop_self_test()
+        return
+    if _self_test_active and controller is not None:
+        controller.interrupt_self_test()
     if t.endswith("/personality/set"):
         _request_personality_switch(p)
         return
@@ -494,7 +529,8 @@ def _on_connect(client,userdata,flags,rc,properties=None):
         subs=["say/set","eyes/dim/set","eyes/full/set","blink/set","flicker/set","volume/set",
               "motion/trigger/set","motion/enabled/set","idle_life/enabled/set",
               "scene/play/set","scene/stop/set","personality/set",
-              "personality/default_scene/play/set","night_mode/set","restart/set"]
+              "personality/default_scene/play/set","self_test/run/set",
+              "self_test/stop/set","night_mode/set","restart/set"]
         for path in subs:
             try: client.subscribe(f"{MQTT_BASE}/{path}")
             except Exception as e: print("[mqtt subscribe]",e)
@@ -504,6 +540,7 @@ def _on_connect(client,userdata,flags,rc,properties=None):
         _publish_personality_state()
         _publish_operator_controls()
         _publish_settings_state()
+        _publish_self_test_state()
         _publish_watchdog_snapshot()
         if _health is not None: _health.publish_now(sample=False)
     else:
@@ -534,9 +571,13 @@ def eyes_set(frac:float):
     frac=clamp(float(frac),0.0,1.0)
     if EYES_INVERT: frac=1.0-frac
     with _eyes_lock:
-        if _eyes_ch is not None:
-            try: _eyes_ch.duty_cycle=int(0xFFFF*frac)
-            except Exception as e: print("[eyes set]",e)
+        if _eyes_ch is None: return False
+        try:
+            _eyes_ch.duty_cycle=int(0xFFFF*frac)
+            return True
+        except Exception as e:
+            print("[eyes set]",e)
+            return False
 
 def _stop_eyes_effect():
     global _eyes_effect_thread,_eyes_effect_stop
@@ -575,8 +616,12 @@ def eyes_flicker(duration_s=5.0, base=0.2, span=0.7, step_ms=60, blocking=False)
 
 def _jaw_set(frac:float):
     try:
-        if _jaw is not None: _jaw.fraction=clamp(frac,0,1)
-    except Exception as e: print("[jaw]",e)
+        if _jaw is None: return False
+        _jaw.fraction=clamp(frac,0,1)
+        return True
+    except Exception as e:
+        print("[jaw]",e)
+        return False
 
 def jaw_env_from_wav(path:str):
     try:
@@ -741,6 +786,7 @@ def speak_phrases_with_jaw(
     abort=None,
     stop_event=None,
     allow_legacy_fallback=True,
+    streaming_result=None,
 ):
     """Speak an iterable without releasing the output stream between phrases."""
     speaking=False
@@ -800,6 +846,8 @@ def speak_phrases_with_jaw(
                 if streaming_aborted:
                     return barge_result
                 if streaming_complete:
+                    if streaming_result is not None:
+                        streaming_result(metrics)
                     _health_set("speech",ComponentState.READY,"warm streaming Piper",True)
                     mqtt_pub("tts/speak_time",f"{metrics.total_seconds:.3f}")
                     mqtt_pub("tts/audio_time",f"{metrics.audio_seconds:.3f}")
@@ -833,6 +881,7 @@ def speak_with_jaw(
     first_audio=None,
     stop_event=None,
     allow_legacy_fallback=True,
+    streaming_result=None,
 ):
     if not text: return None
     return speak_phrases_with_jaw(
@@ -840,6 +889,7 @@ def speak_with_jaw(
         first_audio=first_audio,
         stop_event=stop_event,
         allow_legacy_fallback=allow_legacy_fallback,
+        streaming_result=streaming_result,
     )
 
 def _publish_llm_metrics(result):
@@ -1027,6 +1077,7 @@ if gpiozero is not None:
             if controller is not None:
                 controller.interrupt_idle()
                 controller.interrupt_scene()
+                controller.interrupt_self_test()
             mqtt_pub("motion","ON"); mqtt_pub("motion/count",str(motion_count))
             _schedule_motion_trigger()
         def _pir_off():
@@ -1288,6 +1339,13 @@ def _init_health_monitor():
         "motion",
         ComponentState.FAILED if isinstance(pir,_DummyPIR) else ComponentState.READY,
         "PIR unavailable; MQTT trigger remains available" if isinstance(pir,_DummyPIR) else "PIR ready",
+        False,
+        publish=False,
+    )
+    _health.set_component(
+        "self_test",
+        ComponentState.STARTING if SELF_TEST_ENABLED else ComponentState.DISABLED,
+        "operator self-test pending" if SELF_TEST_ENABLED else "disabled by configuration",
         False,
         publish=False,
     )
@@ -1937,6 +1995,211 @@ def _run_scene(name):
         _health_set("scenes",ComponentState.READY,f"{len(_scene_library)} scenes ready")
     _publish_scene_ready_state()
 
+def _self_test_ready_state():
+    if _self_test_active: return "running"
+    if _self_test_pending: return "queued"
+    if not SELF_TEST_ENABLED: return "disabled"
+    if _self_test_runner is None: return "starting"
+    return "ready"
+
+def _publish_self_test_state():
+    mqtt_pub("self_test/active","ON" if _self_test_active else "OFF",retain=True)
+    mqtt_pub("self_test/state",_self_test_ready_state(),retain=True)
+    mqtt_pub("self_test/step",_self_test_step,retain=True)
+    mqtt_pub("self_test/last_result",_self_test_last_result,retain=True)
+    mqtt_pub("self_test/last_error",_self_test_last_error,retain=True)
+    mqtt_pub("self_test/last_run",_self_test_last_run,retain=True)
+    mqtt_pub("self_test/count",str(_self_test_count),retain=True)
+    mqtt_pub("self_test/interrupted",str(_self_test_interrupted),retain=True)
+    mqtt_pub("self_test/report",_self_test_report,retain=True)
+
+def _self_test_progress(index,total,step):
+    global _self_test_step
+    if controller is not None: controller.heartbeat()
+    _self_test_step=f"{index}/{total}:{step.name}"
+    mqtt_pub("self_test/step",_self_test_step,retain=True)
+
+def _self_test_eyes(stop_signal):
+    if _eyes_ch is None:
+        raise SelfTestStepSkipped("PCA9685 eye channel unavailable")
+    level=clamp(SELF_TEST_EYES_FRAC,0.05,0.35)
+    if night_mode:
+        level=min(level,clamp(EYES_SPEAK_FRAC,0.0,1.0))
+    if level <= 0:
+        raise SelfTestStepSkipped("night-mode eye limit is zero")
+    interval=clamp(SELF_TEST_STEP_SEC,0.10,1.0)
+    for scale in (0.45,1.0):
+        if not eyes_set(level*scale):
+            raise RuntimeError("eye PWM write failed")
+        if stop_signal.wait(interval):
+            raise SelfTestInterrupted()
+        if not eyes_set(0.0):
+            raise RuntimeError("eye PWM reset failed")
+        if stop_signal.wait(interval/2.0):
+            raise SelfTestInterrupted()
+    return f"two PWM pulses up to {level*100:.0f}%"
+
+def _self_test_jaw(stop_signal):
+    if _jaw is None:
+        raise SelfTestStepSkipped("PCA9685 jaw servo unavailable")
+    travel=clamp(SELF_TEST_JAW_FRAC,0.05,0.35)
+    target=JAW_REST_FRAC+(JAW_MAX_FRAC-JAW_REST_FRAC)*travel
+    interval=clamp(SELF_TEST_STEP_SEC,0.10,1.0)
+    for _ in range(2):
+        if not _jaw_set(target):
+            raise RuntimeError("jaw servo write failed")
+        if stop_signal.wait(interval):
+            raise SelfTestInterrupted()
+        if not _jaw_set(JAW_REST_FRAC):
+            raise RuntimeError("jaw servo reset failed")
+        if stop_signal.wait(interval/2.0):
+            raise SelfTestInterrupted()
+    return f"two movements at {travel*100:.0f}% travel"
+
+def _self_test_speaker(stop_signal):
+    if _speech_engine is None:
+        raise SelfTestStepSkipped("interruptible streaming Piper unavailable")
+    if not SELF_TEST_LINE:
+        raise SelfTestStepSkipped("SELF_TEST_LINE is empty")
+    completed=[]
+    barge_result=speak_with_jaw(
+        SELF_TEST_LINE,
+        stop_event=stop_signal,
+        allow_legacy_fallback=False,
+        streaming_result=completed.append,
+    )
+    if stop_signal.is_set() or barge_result is not None:
+        raise SelfTestInterrupted()
+    if not completed:
+        raise RuntimeError("streaming Piper playback did not complete")
+    if completed[0].interrupted:
+        raise SelfTestInterrupted()
+    return "streaming Piper audio played"
+
+def _init_operator_self_test():
+    global _self_test_runner
+    if not SELF_TEST_ENABLED:
+        _self_test_runner=None
+        _health_set("self_test",ComponentState.DISABLED,"disabled by configuration")
+        _publish_self_test_state()
+        return
+    _self_test_runner=SelfTestRunner(
+        maximum_seconds=SELF_TEST_MAX_SECONDS,
+        progress=_self_test_progress,
+    )
+    _health_set("self_test",ComponentState.READY,"manual output test ready")
+    _publish_self_test_state()
+
+def _record_self_test_request(result,error="none"):
+    global _self_test_last_result,_self_test_last_error
+    _self_test_last_result=str(result)
+    _self_test_last_error=str(error or "none")[:255]
+    mqtt_pub("self_test/last_result",_self_test_last_result,retain=True)
+    mqtt_pub("self_test/last_error",_self_test_last_error,retain=True)
+
+def _request_self_test():
+    global _self_test_pending
+    if not SELF_TEST_ENABLED or _self_test_runner is None:
+        _record_self_test_request("disabled","operator self-test is disabled")
+        return False
+    if controller is None:
+        _record_self_test_request("not_ready","controller is not ready")
+        return False
+    if (
+        _self_test_active
+        or _self_test_pending
+        or controller.state not in (RuntimeState.IDLE,RuntimeState.COOLDOWN)
+    ):
+        _record_self_test_request("busy",f"controller is {controller.state.value}")
+        return False
+    _self_test_pending=True
+    accepted=_enqueue(EventKind.RUN_SELF_TEST,source="mqtt")
+    if accepted:
+        _record_self_test_request("queued")
+        _publish_self_test_state()
+    else:
+        _self_test_pending=False
+        _record_self_test_request("busy","controller queue rejected the request")
+    return accepted
+
+def _stop_self_test():
+    global _self_test_cancel_pending
+    if controller is not None and _self_test_active:
+        controller.interrupt_self_test()
+        mqtt_pub("self_test/state","stopping",retain=True)
+        return True
+    if _self_test_pending:
+        _self_test_cancel_pending=True
+        mqtt_pub("self_test/state","stopping",retain=True)
+        return True
+    return False
+
+def _run_self_test():
+    global _self_test_active,_self_test_step,_self_test_last_result
+    global _self_test_last_error,_self_test_last_run,_self_test_count
+    global _self_test_interrupted,_self_test_report
+    global _self_test_pending,_self_test_cancel_pending
+    _self_test_pending=False
+    if _self_test_runner is None:
+        _record_self_test_request("disabled","operator self-test is not ready")
+        return
+
+    if _self_test_cancel_pending:
+        _self_test_cancel_pending=False
+        _self_test_count+=1; _self_test_interrupted+=1
+        _self_test_last_result="interrupted"; _self_test_last_error="none"
+        _self_test_last_run=datetime.now(timezone.utc).isoformat(timespec="seconds")
+        _self_test_report=(
+            '{"duration_seconds":0.0,"interrupted":true,"outcome":"interrupted",'
+            '"steps":[],"timed_out":false}'
+        )
+        _health_set("self_test",ComponentState.READY,"queued run cancelled")
+        _publish_self_test_state()
+        return
+
+    _self_test_count+=1
+    _self_test_active=True; _self_test_step="starting"
+    _publish_self_test_state()
+    controller.set_state(RuntimeState.SELF_TEST)
+    try:
+        result=_self_test_runner.run(
+            (
+                SelfTestStep("eyes",_self_test_eyes),
+                SelfTestStep("jaw",_self_test_jaw),
+                SelfTestStep("speaker",_self_test_speaker),
+            ),
+            controller.self_test_interrupt_event,
+        )
+        _self_test_last_result=result.outcome
+        _self_test_last_error=result.error or (
+            f"exceeded {SELF_TEST_MAX_SECONDS:g}s limit" if result.timed_out else "none"
+        )
+        _self_test_report=result.report_json()
+        if result.interrupted:
+            _self_test_interrupted+=1
+        if result.outcome in ("failed","timed_out"):
+            _health_set(
+                "self_test",
+                ComponentState.DEGRADED,
+                _self_test_last_error or result.outcome,
+            )
+        elif result.outcome == "degraded":
+            _health_set("self_test",ComponentState.DEGRADED,"one or more output tests unavailable")
+        else:
+            _health_set("self_test",ComponentState.READY,f"last run {result.outcome}")
+    except Exception as error:
+        _self_test_last_result="failed"
+        _self_test_last_error=str(error)[:255]
+        _self_test_report=json.dumps({"outcome":"failed","error":str(error)[:255]})
+        _health_set("self_test",ComponentState.DEGRADED,_self_test_last_error)
+    finally:
+        _jaw_set(JAW_REST_FRAC)
+        eyes_idle()
+        _self_test_active=False; _self_test_step="none"
+        _self_test_cancel_pending=False
+        _self_test_last_run=datetime.now(timezone.utc).isoformat(timespec="seconds")
+        _publish_self_test_state()
+
 def _idle_life_ready_state():
     if _idle_life is None: return "starting"
     if not _idle_life.enabled: return "disabled"
@@ -2043,7 +2306,12 @@ def _runtime_state_changed(state):
         eyes_speak()
     elif state in (RuntimeState.LISTENING,RuntimeState.THINKING):
         eyes_listen()
-    elif state in (RuntimeState.EFFECT,RuntimeState.SCENE,RuntimeState.IDLE_LIFE):
+    elif state in (
+        RuntimeState.EFFECT,
+        RuntimeState.SCENE,
+        RuntimeState.IDLE_LIFE,
+        RuntimeState.SELF_TEST,
+    ):
         return
     else:
         eyes_idle()
@@ -2121,6 +2389,8 @@ def _handle_event(event):
         _run_scene(event.payload)
     elif event.kind is EventKind.STOP_SCENE:
         _publish_scene_ready_state()
+    elif event.kind is EventKind.RUN_SELF_TEST:
+        _run_self_test()
     elif event.kind is EventKind.SAY:
         _transcript_start()
         try:
@@ -2187,6 +2457,10 @@ def _cleanup():
     except Exception: pass
     try: mqtt_pub("scene/state","stopping",retain=True)
     except Exception: pass
+    try: mqtt_pub("self_test/active","OFF",retain=True)
+    except Exception: pass
+    try: mqtt_pub("self_test/state","stopping",retain=True)
+    except Exception: pass
     try: mqtt_pub("personality/state","stopping",retain=True)
     except Exception: pass
     try: mqtt_pub("availability","offline",retain=True)
@@ -2226,6 +2500,7 @@ def main():
     _init_scene_engine()
     _validate_personality_scenes()
     _init_speech_engine()
+    _init_operator_self_test()
     _prepare_scene_sounds()
     _init_llm_client()
     _warm_ollama()

@@ -208,6 +208,50 @@ def discovery_messages(
         "uniq_id": f"holiday_{device_name}_settings_save_count",
         "stat_t": f"{base}/settings/save_count",
     })
+    add("binary_sensor", "self_test_active", {
+        "name": f"{title} Self-Test Active",
+        "uniq_id": f"holiday_{device_name}_self_test_active",
+        "stat_t": f"{base}/self_test/active", "pl_on": "ON", "pl_off": "OFF",
+    })
+    add("sensor", "self_test_state", {
+        "name": f"{title} Self-Test State",
+        "uniq_id": f"holiday_{device_name}_self_test_state",
+        "stat_t": f"{base}/self_test/state",
+        "icon": "mdi:stethoscope",
+    })
+    add("sensor", "self_test_step", {
+        "name": f"{title} Self-Test Step",
+        "uniq_id": f"holiday_{device_name}_self_test_step",
+        "stat_t": f"{base}/self_test/step",
+    })
+    add("sensor", "self_test_last_result", {
+        "name": f"{title} Self-Test Last Result",
+        "uniq_id": f"holiday_{device_name}_self_test_last_result",
+        "stat_t": f"{base}/self_test/last_result",
+        "json_attr_t": f"{base}/self_test/report",
+    })
+    add("sensor", "self_test_last_error", {
+        "name": f"{title} Self-Test Last Error",
+        "uniq_id": f"holiday_{device_name}_self_test_last_error",
+        "stat_t": f"{base}/self_test/last_error",
+    })
+    add("sensor", "self_test_last_run", {
+        "name": f"{title} Self-Test Last Run",
+        "uniq_id": f"holiday_{device_name}_self_test_last_run",
+        "stat_t": f"{base}/self_test/last_run",
+    })
+    add("sensor", "self_test_count", {
+        "name": f"{title} Self-Test Count",
+        "uniq_id": f"holiday_{device_name}_self_test_count",
+        "stat_t": f"{base}/self_test/count",
+        "state_class": "total_increasing",
+    })
+    add("sensor", "self_test_interrupted", {
+        "name": f"{title} Self-Tests Interrupted",
+        "uniq_id": f"holiday_{device_name}_self_test_interrupted",
+        "stat_t": f"{base}/self_test/interrupted",
+        "state_class": "total_increasing",
+    })
     add("binary_sensor", "watchdog_enabled", {
         "name": f"{title} Watchdog Enabled",
         "uniq_id": f"holiday_{device_name}_watchdog_enabled",
@@ -495,6 +539,16 @@ def discovery_messages(
         "name": f"{title} Play Personality Scene",
         "uniq_id": f"holiday_{device_name}_personality_default_scene_play",
         "cmd_t": f"{base}/personality/default_scene/play/set",
+    })
+    add("button", "self_test_run", {
+        "name": f"{title} Run Self-Test",
+        "uniq_id": f"holiday_{device_name}_self_test_run",
+        "cmd_t": f"{base}/self_test/run/set",
+    })
+    add("button", "self_test_stop", {
+        "name": f"{title} Stop Self-Test",
+        "uniq_id": f"holiday_{device_name}_self_test_stop",
+        "cmd_t": f"{base}/self_test/stop/set",
     })
     add("button", "blink", {
         "name": f"{title} Blink", "uniq_id": f"holiday_{device_name}_blink_btn",
