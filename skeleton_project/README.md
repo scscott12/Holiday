@@ -17,6 +17,7 @@ holiday_skeleton/
   idle_life.py               sparse idle-action scheduler
   personality.py             validated character packs and bounded settings
   scene.py                   validated scene files, cue loading, and bounded runner
+  settings.py                atomic non-sensitive operator-state persistence
   speech.py                  warm Piper voice, PCM playback, and jaw envelope
   discovery.py               shared Home Assistant MQTT definitions
 tests/                       hardware-free unit tests
@@ -81,6 +82,9 @@ views:
           - sensor.skeleton_scene_step
           - sensor.skeleton_personality_state
           - sensor.skeleton_personality_default_scene
+          - sensor.skeleton_saved_settings_state
+          - sensor.skeleton_settings_last_saved
+          - sensor.skeleton_settings_last_error
           - sensor.skeleton_status
           - sensor.skeleton_reply_time
           - sensor.skeleton_llm_first_token
@@ -144,6 +148,8 @@ Environment="SCENE_MAX_SECONDS=30"
 Environment="PERSONALITIES_ENABLED=1"
 Environment="PERSONALITIES_PATH=/opt/holiday-skeleton/personalities.json"
 Environment="PERSONALITY=pirate"
+Environment="PERSIST_SETTINGS_ENABLED=1"
+Environment="PERSIST_SETTINGS_PATH=/var/lib/holiday-skeleton/operator-settings.json"
 Environment="HEALTH_INTERVAL_SEC=30"
 Environment="HEALTH_LATENCY_WINDOW=20"
 Environment="HEALTH_TEMP_WARN_C=75"
@@ -256,7 +262,7 @@ Idle life is deliberately lower priority than every visitor or Home Assistant ac
 
 Configuration:
 
-- `IDLE_LIFE_ENABLED`: startup default; the Home Assistant switch can change it until restart.
+- `IDLE_LIFE_ENABLED`: first-run default; the Home Assistant switch persists across restarts when saved settings are enabled.
 - `IDLE_LIFE_MIN_SEC` / `IDLE_LIFE_MAX_SEC`: random quiet interval between behaviors.
 - `IDLE_MUTTER_CHANCE`: probability from `0.0` to `1.0` that a due action speaks.
 - `IDLE_EYE_PULSE_FRAC` / `IDLE_EYE_PULSE_MS`: brightness and duration of the subtle eye pulse. Night mode caps it at the dim-eye level.
@@ -275,13 +281,29 @@ Turning off `switch.skeleton_motion_enabled` disarms idle life as well as visito
 - stop, listen, and wake-word grammar for command-only barge-in;
 - one default scene available through the **Play Personality Scene** button.
 
-The packaged library includes `pirate`, `graveyard_host`, and `silent_watcher`. Set `PERSONALITY` for the startup selection or use `select.skeleton_personality` while the service is running. Switching requires no restart, but it is accepted only while the controller is `idle` or `cooldown`; a request during a greeting, visit, response, scene, or idle behavior returns `busy` and leaves the active pack untouched.
+The packaged library includes `pirate`, `graveyard_host`, and `silent_watcher`. Set `PERSONALITY` for the first-run selection or use `select.skeleton_personality` while the service is running; once operator persistence has saved a selection, that value wins across restarts. Switching requires no restart, but it is accepted only while the controller is `idle` or `cooldown`; a request during a greeting, visit, response, scene, or idle behavior returns `busy` and leaves the active pack untouched.
 
 An accepted switch prepares the incoming Ollama client, barge-in grammar, idle scheduler, and canned-speech cache before changing the active pack. Conversation memory is already empty at this boundary and is explicitly reported as zero. Invalid settings, unknown pack names, unsafe scene names, and missing named scenes cannot partially replace a running personality during a live switch. Startup cross-checks every pack's default scene and reports any mismatch as degraded configuration. If the personality file cannot load at startup, the legacy built-in prompt and optional `prompts.json` override remain available while health reports the configuration error.
 
 Files are limited to 12 packs. Prompts, line counts and lengths, memory/context values, sampling ranges, phrase boundaries, volume multipliers, command lists, and scene identifiers are all bounded during loading. Edit `personalities.json` and restart once to reload the library itself; changing between already-loaded packs is immediate. With packs enabled, their settings take precedence over the legacy `SYSTEM_PROMPT`, `IDLE_LINES`, `LLM_*`, and `BARGE_IN_*` prompt/tuning values.
 
 Home Assistant exposes the active pack, readiness, library metadata, default scene, switch count, and last result/error. Library attributes intentionally omit full prompts and canned lines.
+
+## Persistent operator settings
+
+With `PERSIST_SETTINGS_ENABLED=1` (the default), Home Assistant changes survive service restarts and Raspberry Pi reboots. The versioned file stores only:
+
+- the active personality;
+- motion and idle-life enable switches;
+- night-mode state;
+- current eye levels and volume; and
+- the daytime eye/volume profile needed to leave night mode correctly.
+
+Visitor audio, recognized text, transcripts, conversation memory, prompts, broker details, passwords, and other credentials are never written to this file. Conversation memory remains visit-scoped and RAM-only.
+
+The controller writes a complete temporary JSON document with `0600` permissions, flushes it to disk, then atomically replaces `/var/lib/holiday-skeleton/operator-settings.json`. The packaged systemd service creates `/var/lib/holiday-skeleton` for the service account. A failed write leaves the previous document intact; a missing, malformed, oversized, incompatible, or out-of-range document is ignored and reported as a degraded `settings` component while configured environment defaults continue to run.
+
+Saved operator values take precedence over their corresponding environment defaults after the first successful Home Assistant change. `sensor.skeleton_saved_settings_state` reports `empty`, `restored`, `saved`, `disabled`, or `error`; the last-save and last-error sensors provide deployment diagnostics. To return to environment defaults, stop the service, move the JSON file to a backup name, and start the service again.
 
 ## Scene engine
 
@@ -314,7 +336,7 @@ Home Assistant exposes scene readiness, available names, active scene, current s
 
 ## Health and performance
 
-The runtime performs explicit startup checks for MQTT, the personality library, the Vosk microphone path, Piper, Ollama, the PIR, and PCA9685 animation hardware. It reports one of five overall states:
+The runtime performs explicit startup checks for MQTT, saved settings, the personality library, the Vosk microphone path, Piper, Ollama, the PIR, and PCA9685 animation hardware. It reports one of five overall states:
 
 - `healthy`: all enabled paths are ready.
 - `degraded`: the skeleton remains usable, but an optional path or preferred fast path is unavailable. Examples include no PIR with MQTT trigger still working, Ollama using the local spoken fallback, or legacy Piper replacing streaming audio.

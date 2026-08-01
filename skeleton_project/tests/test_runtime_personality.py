@@ -51,6 +51,7 @@ class RuntimePersonalityTests(unittest.TestCase):
     def test_switch_rebuilds_dependent_runtime_and_prunes_cache(self):
         speech = FakeSpeechEngine()
         pirate = self.personalities.select("pirate")
+        persisted = []
         runtime._apply_personality_globals(pirate)
 
         with mock.patch.multiple(
@@ -63,6 +64,7 @@ class RuntimePersonalityTests(unittest.TestCase):
             _publish_barge_in_capability=mock.DEFAULT,
             _publish_idle_life_ready_state=mock.DEFAULT,
             _publish_memory_turns=mock.DEFAULT,
+            _persist_operator_settings=lambda: persisted.append(runtime._personality_active.name),
             _health_set=mock.DEFAULT,
             mqtt_pub=mock.DEFAULT,
         ):
@@ -80,6 +82,7 @@ class RuntimePersonalityTests(unittest.TestCase):
             self.assertEqual(len(speech.retained), 1)
             self.assertIn("There you are.", speech.retained[0])
             self.assertNotIn("The sun be up already. Bold of it, honestly.", speech.retained[0])
+            self.assertEqual(persisted, ["silent_watcher"])
 
     def test_switch_request_is_rejected_during_active_visit(self):
         published = []

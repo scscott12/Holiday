@@ -187,6 +187,27 @@ def discovery_messages(
         "uniq_id": f"holiday_{device_name}_personality_switch_count",
         "stat_t": f"{base}/personality/switch_count",
     })
+    add("sensor", "settings_state", {
+        "name": f"{title} Saved Settings State",
+        "uniq_id": f"holiday_{device_name}_settings_state",
+        "stat_t": f"{base}/settings/state",
+        "icon": "mdi:content-save-cog",
+    })
+    add("sensor", "settings_last_saved", {
+        "name": f"{title} Settings Last Saved",
+        "uniq_id": f"holiday_{device_name}_settings_last_saved",
+        "stat_t": f"{base}/settings/last_saved",
+    })
+    add("sensor", "settings_last_error", {
+        "name": f"{title} Settings Last Error",
+        "uniq_id": f"holiday_{device_name}_settings_last_error",
+        "stat_t": f"{base}/settings/last_error",
+    })
+    add("sensor", "settings_save_count", {
+        "name": f"{title} Settings Save Count",
+        "uniq_id": f"holiday_{device_name}_settings_save_count",
+        "stat_t": f"{base}/settings/save_count",
+    })
     add("binary_sensor", "ready", {
         "name": f"{title} Ready", "uniq_id": f"holiday_{device_name}_ready",
         "stat_t": f"{base}/ready", "pl_on": "ON", "pl_off": "OFF",
