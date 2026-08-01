@@ -239,6 +239,26 @@ class PiperSpeechEngine:
     def cache_pcm_bytes(self) -> int:
         return sum(sum(len(frame) for frame in item.frames) for item in self._cache.values())
 
+    def retain_cached_phrases(self, phrases: Iterable[str]) -> int:
+        """Drop cached audio that is not needed by the active configuration.
+
+        Personality switching pre-renders the incoming pack before making it
+        active. Pruning afterward keeps repeated switches from growing RAM
+        forever while retaining any overlapping canned or scene lines.
+        """
+
+        keep = {
+            key for key in (self._cache_key(text) for text in phrases) if key
+        }
+        with self._lock:
+            if self._closed:
+                raise SpeechEngineError("speech engine is closed")
+            removed = len(self._cache) - len(set(self._cache).intersection(keep))
+            self._cache = {
+                key: value for key, value in self._cache.items() if key in keep
+            }
+            return removed
+
     def cache_phrases(self, phrases: Iterable[str]) -> SpeechCacheMetrics:
         """Pre-render unique canned lines without writing anything to the speaker.
 

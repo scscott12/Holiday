@@ -25,6 +25,7 @@ class EventKind(str, Enum):
     SET_MOTION_ENABLED = "set_motion_enabled"
     SET_IDLE_LIFE_ENABLED = "set_idle_life_enabled"
     SET_NIGHT_MODE = "set_night_mode"
+    SET_PERSONALITY = "set_personality"
     PLAY_SCENE = "play_scene"
     STOP_SCENE = "stop_scene"
     RESTART = "restart"

@@ -212,6 +212,19 @@ class PiperSpeechEngineTests(unittest.TestCase):
         self.assertEqual(metrics.existing_entries, 1)
         self.assertEqual(metrics.total_entries, 1)
 
+    def test_cache_can_be_pruned_after_personality_switch(self):
+        engine = self.make_engine([FakeChunk(np.full(20, 1000))])
+        engine.cache_phrases(["Old greeting.", "Shared scene.", "New greeting."])
+
+        removed = engine.retain_cached_phrases(["Shared scene.", "New greeting."])
+
+        self.assertEqual(removed, 1)
+        self.assertEqual(engine.cache_entries, 2)
+        old_metrics = engine.speak("Old greeting.")
+        shared_metrics = engine.speak("Shared scene.")
+        self.assertEqual(old_metrics.cached_phrases, 0)
+        self.assertEqual(shared_metrics.cached_phrases, 1)
+
     def test_one_cache_failure_does_not_disable_other_lines_or_live_tts(self):
         self.voice = FakeVoice(
             [FakeChunk(np.full(20, 1000))],

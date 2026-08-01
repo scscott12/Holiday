@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """Holiday Skeleton single-process runtime (Home Assistant ready)."""
 import os, time, json, queue, subprocess, random, threading, re, wave, signal
+from dataclasses import replace
 from datetime import datetime
 from urllib.parse import urlsplit, urlunsplit
 import numpy as np
@@ -21,6 +22,11 @@ from holiday_skeleton.brain import (
 from holiday_skeleton.controller import EventKind, RuntimeState, SkeletonController
 from holiday_skeleton.discovery import discovery_messages
 from holiday_skeleton.idle_life import IdleAction, IdleDecision, IdleLifeScheduler
+from holiday_skeleton.personality import (
+    can_switch_personality,
+    PersonalityConfigError,
+    PersonalityLibrary,
+)
 from holiday_skeleton.health import (
     ComponentState,
     HealthSnapshot,
@@ -120,6 +126,10 @@ SCENES_PATH = envs("SCENES_PATH",os.path.join(os.path.dirname(__file__),"scenes.
 SCENE_SOUND_DIR = envs("SCENE_SOUND_DIR",os.path.join(os.path.dirname(__file__),"sounds"))
 SCENE_MAX_SECONDS = float(envs("SCENE_MAX_SECONDS","30"))
 
+PERSONALITIES_ENABLED = envs("PERSONALITIES_ENABLED","1").strip().lower() in ("1","true","yes","on")
+PERSONALITIES_PATH = envs("PERSONALITIES_PATH",os.path.join(os.path.dirname(__file__),"personalities.json"))
+PERSONALITY_REQUESTED = envs("PERSONALITY","").strip().lower()
+
 HEALTH_INTERVAL_SEC = float(envs("HEALTH_INTERVAL_SEC","30"))
 HEALTH_LATENCY_WINDOW = int(envs("HEALTH_LATENCY_WINDOW","20"))
 HEALTH_TEMP_WARN_C = float(envs("HEALTH_TEMP_WARN_C","75"))
@@ -155,17 +165,22 @@ KEEP_ALIVE   = envs("KEEP_ALIVE","24h")
 OLLAMA_TIMEOUT = (3, 30)
 LLM_MEMORY_TURNS = max(0,int(envs("LLM_MEMORY_TURNS","3")))
 LLM_CONTEXT_TOKENS = max(128,int(envs("LLM_CONTEXT_TOKENS","512")))
-OLLAMA_OPTS  = {"num_predict": 50, "num_thread": 4, "temperature": 0.6, "repeat_penalty": 1.05, "num_ctx": LLM_CONTEXT_TOKENS}
+LLM_MAXIMUM_TOKENS = int(envs("LLM_MAXIMUM_TOKENS","50"))
+LLM_TEMPERATURE = float(envs("LLM_TEMPERATURE","0.6"))
+LLM_REPEAT_PENALTY = float(envs("LLM_REPEAT_PENALTY","1.05"))
+OLLAMA_OPTS  = {"num_predict": LLM_MAXIMUM_TOKENS, "num_thread": 4, "temperature": LLM_TEMPERATURE, "repeat_penalty": LLM_REPEAT_PENALTY, "num_ctx": LLM_CONTEXT_TOKENS}
 LLM_PHRASE_MIN_CHARS = int(envs("LLM_PHRASE_MIN_CHARS","12"))
 LLM_PHRASE_SOFT_CHARS = int(envs("LLM_PHRASE_SOFT_CHARS","36"))
 LLM_PHRASE_MAX_CHARS = int(envs("LLM_PHRASE_MAX_CHARS","72"))
 VOLUME       = float(envs("VOLUME","1.0"))
+PERSONALITY_VOLUME_MULTIPLIER = 1.0
 
 SYSTEM_PROMPT = (
     "You are a semi-retired pirate trying to act normal in modern times. "
     "Be witty, chaotic, and playfully dramatic — a mix of trauma dumping and humor. "
     "Use Gen Z slang naturally. One short sentence. Never curse."
 )
+LLM_FALLBACK_LINE = "Arrr, I be old and forgetful — say it again, matey!"
 PROMPTS_PATH = envs("PROMPTS_PATH", os.path.join(os.path.dirname(__file__), "prompts.json"))
 
 MORNING_LINES=[
@@ -212,6 +227,13 @@ _scene_active=False
 _scene_current="none"
 _scene_step="none"
 
+_personality_library=None
+_personality_active=None
+_personality_load_error=""
+_personality_switch_count=0
+_personality_last_result="starting"
+_personality_last_error="none"
+
 def pick_opening_line()->str:
     hr=datetime.now().hour
     if 5<=hr<12: return random.choice(MORNING_LINES)
@@ -235,21 +257,24 @@ def _try_load_prompts():
     except Exception as e: print("[prompts] Failed:",e)
 _try_load_prompts()
 
-def _canned_speech_lines():
+def _canned_speech_lines(pack=None):
     """Return each configured opening/goodbye line once, in stable order."""
-    configured=list(dict.fromkeys(
-        str(line).strip()
-        for group in (
-            MORNING_LINES,
-            AFTERNOON_LINES,
-            EVENING_LINES,
-            NIGHT_LINES,
-            GOODBYE_LINES,
-            IDLE_LINES,
-        )
-        for line in group
-        if str(line).strip()
-    ))
+    if pack is not None:
+        configured=list(pack.canned_lines)
+    else:
+        configured=list(dict.fromkeys(
+            str(line).strip()
+            for group in (
+                MORNING_LINES,
+                AFTERNOON_LINES,
+                EVENING_LINES,
+                NIGHT_LINES,
+                GOODBYE_LINES,
+                IDLE_LINES,
+            )
+            for line in group
+            if str(line).strip()
+        ))
     if _scene_library is not None:
         configured.extend(
             str(step.parameters["text"])
@@ -258,6 +283,14 @@ def _canned_speech_lines():
             if step.action is SceneAction.SPEAK
         )
     return list(dict.fromkeys(configured))
+
+def _personality_names():
+    if _personality_library is not None:
+        return _personality_library.names
+    return ("legacy",)
+
+def _personality_active_name():
+    return _personality_active.name if _personality_active is not None else "legacy"
 
 EXIT_RE=re.compile(r"\b(good\s?bye|bye|farewell|that'?s all|we('re| are) done|stop now|quit|exit|shut\s?down)\b",re.I)
 
@@ -339,6 +372,16 @@ def _enqueue(kind,payload=None,source="mqtt"):
 
 def _on_message(client,userdata,msg):
     t=msg.topic; p=msg.payload.decode("utf-8","ignore").strip()
+    if t.endswith("/personality/set"):
+        _request_personality_switch(p)
+        return
+    if t.endswith("/personality/default_scene/play/set"):
+        scene=_personality_active.default_scene if _personality_active is not None else ""
+        if scene:
+            _enqueue(EventKind.PLAY_SCENE,scene)
+        else:
+            _record_personality_result("error","active personality has no default scene")
+        return
     if t.endswith("/scene/play/set"):
         if p: _enqueue(EventKind.PLAY_SCENE,p)
         return
@@ -372,13 +415,15 @@ def _on_connect(client,userdata,flags,rc,properties=None):
         publish_mqtt_discovery()
         subs=["say/set","eyes/dim/set","eyes/full/set","blink/set","flicker/set","volume/set",
               "motion/trigger/set","motion/enabled/set","idle_life/enabled/set",
-              "scene/play/set","scene/stop/set","night_mode/set","restart/set"]
+              "scene/play/set","scene/stop/set","personality/set",
+              "personality/default_scene/play/set","night_mode/set","restart/set"]
         for path in subs:
             try: client.subscribe(f"{MQTT_BASE}/{path}")
             except Exception as e: print("[mqtt subscribe]",e)
         mqtt_pub("ready","ON" if _runtime_ready else "OFF")
         if _idle_life is not None: _publish_idle_life_ready_state()
         if _scene_library is not None: _publish_scene_ready_state()
+        _publish_personality_state()
         if _health is not None: _health.publish_now(sample=False)
     else:
         _health_set("mqtt",ComponentState.FAILED,f"connection rc={rc}")
@@ -495,6 +540,9 @@ def speak_wav_play(path:str):
     try: subprocess.run(["aplay","-q",path],check=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     except Exception as e: print("[aplay]",e)
 
+def _speech_volume():
+    return clamp(VOLUME*PERSONALITY_VOLUME_MULTIPLIER,0.0,2.0)
+
 _speech_lock=threading.Lock()
 _speech_engine=None
 _llm_client=None
@@ -600,7 +648,7 @@ def _legacy_speak_with_jaw(text:str):
             raise RuntimeError(f"Piper exited with status {p.returncode}")
     except Exception as e:
         print("[TTS legacy]",e); jaw_chatter_fallback(text); return
-    _amplify_wav_inplace(TTS_WAV,VOLUME)
+    _amplify_wav_inplace(TTS_WAV,_speech_volume())
     env=jaw_env_from_wav(TTS_WAV)
     t=threading.Thread(target=speak_wav_play,args=(TTS_WAV,),daemon=True); t.start()
     (jaw_chatter_fallback(text) if float(np.max(env) if env.size else 0.0)<0.05 else jaw_drive_by_env(env))
@@ -726,7 +774,7 @@ def _publish_memory_turns(memory):
     mqtt_pub("llm/memory_turns",str(memory.turn_count if memory is not None else 0))
 
 def stream_llm_reply(user_text:str,memory=None):
-    fallback="Arrr, I be old and forgetful — say it again, matey!"
+    fallback=LLM_FALLBACK_LINE
     if _llm_client is None:
         controller.set_state(RuntimeState.SPEAKING)
         return fallback,speak_with_jaw(fallback)
@@ -927,7 +975,7 @@ if '_jaw' in globals() and _jaw:
     except Exception as e: print("[jaw init]",e)
 
 def publish_mqtt_discovery():
-    for topic,payload in discovery_messages(DEVICE_NAME):
+    for topic,payload in discovery_messages(DEVICE_NAME,_personality_names()):
         mqtt_pub_abs(topic,"" if payload is None else json.dumps(payload),retain=True)
 
 night_mode=False; _day={"listen":None,"speak":None,"vol":None}
@@ -1005,6 +1053,13 @@ def _init_health_monitor():
     _health.set_component("mqtt",ComponentState.STARTING,"connection pending",False,publish=False)
     _health.set_component("speech",ComponentState.STARTING,"Piper warmup pending",True,publish=False)
     _health.set_component("ollama",ComponentState.STARTING,"model warmup pending",False,publish=False)
+    _health.set_component(
+        "personality",
+        ComponentState.STARTING if PERSONALITIES_ENABLED else ComponentState.DISABLED,
+        "personality file pending" if PERSONALITIES_ENABLED else "disabled by configuration",
+        False,
+        publish=False,
+    )
     _health.set_component(
         "scenes",
         ComponentState.STARTING if SCENES_ENABLED else ComponentState.DISABLED,
@@ -1099,6 +1154,250 @@ def _init_llm_client():
         maximum_phrase_chars=LLM_PHRASE_MAX_CHARS,
     )
 
+def _build_llm_client_for_pack(pack):
+    if requests is None: return None
+    reply=pack.reply
+    options={
+        "num_predict":reply.maximum_tokens,
+        "num_thread":4,
+        "temperature":reply.temperature,
+        "repeat_penalty":reply.repeat_penalty,
+        "num_ctx":reply.context_tokens,
+    }
+    return OllamaStreamingClient(
+        http_client=requests,
+        url=OLLAMA_URL,
+        model=OLLAMA_MODEL,
+        system_prompt=pack.system_prompt,
+        keep_alive=KEEP_ALIVE,
+        options=options,
+        timeout=OLLAMA_TIMEOUT,
+        minimum_phrase_chars=reply.phrase_minimum,
+        soft_phrase_chars=reply.phrase_soft,
+        maximum_phrase_chars=reply.phrase_maximum,
+    )
+
+def _build_barge_in_matcher_for_pack(pack):
+    return BargeInMatcher(
+        stop_commands=pack.barge_in.stop_commands,
+        listen_commands=pack.barge_in.listen_commands,
+        wake_words=pack.barge_in.wake_words,
+        require_wake_word=pack.barge_in.require_wake_word,
+    )
+
+def _build_idle_life_for_pack(pack):
+    return IdleLifeScheduler(
+        minimum_interval=IDLE_LIFE_MIN_SEC,
+        maximum_interval=IDLE_LIFE_MAX_SEC,
+        mutter_chance=IDLE_MUTTER_CHANCE,
+        mutter_lines=pack.idle_lines,
+        enabled=IDLE_LIFE_ENABLED,
+    )
+
+def _apply_personality_globals(pack):
+    global SYSTEM_PROMPT,MORNING_LINES,AFTERNOON_LINES,EVENING_LINES,NIGHT_LINES
+    global GOODBYE_LINES,IDLE_LINES,LLM_FALLBACK_LINE,LLM_MEMORY_TURNS
+    global LLM_CONTEXT_TOKENS,LLM_MAXIMUM_TOKENS,LLM_TEMPERATURE
+    global LLM_REPEAT_PENALTY,LLM_PHRASE_MIN_CHARS,LLM_PHRASE_SOFT_CHARS
+    global LLM_PHRASE_MAX_CHARS,OLLAMA_OPTS,PERSONALITY_VOLUME_MULTIPLIER
+    global BARGE_IN_STOP_COMMANDS,BARGE_IN_LISTEN_COMMANDS,BARGE_IN_WAKE_WORDS
+    global BARGE_IN_REQUIRE_WAKE_WORD
+    SYSTEM_PROMPT=pack.system_prompt
+    MORNING_LINES=list(pack.opening_lines["morning"])
+    AFTERNOON_LINES=list(pack.opening_lines["afternoon"])
+    EVENING_LINES=list(pack.opening_lines["evening"])
+    NIGHT_LINES=list(pack.opening_lines["night"])
+    GOODBYE_LINES=list(pack.goodbye_lines)
+    IDLE_LINES=list(pack.idle_lines)
+    LLM_FALLBACK_LINE=pack.fallback_line
+    LLM_MEMORY_TURNS=pack.reply.memory_turns
+    LLM_CONTEXT_TOKENS=pack.reply.context_tokens
+    LLM_MAXIMUM_TOKENS=pack.reply.maximum_tokens
+    LLM_TEMPERATURE=pack.reply.temperature
+    LLM_REPEAT_PENALTY=pack.reply.repeat_penalty
+    LLM_PHRASE_MIN_CHARS=pack.reply.phrase_minimum
+    LLM_PHRASE_SOFT_CHARS=pack.reply.phrase_soft
+    LLM_PHRASE_MAX_CHARS=pack.reply.phrase_maximum
+    OLLAMA_OPTS={
+        "num_predict":LLM_MAXIMUM_TOKENS,
+        "num_thread":4,
+        "temperature":LLM_TEMPERATURE,
+        "repeat_penalty":LLM_REPEAT_PENALTY,
+        "num_ctx":LLM_CONTEXT_TOKENS,
+    }
+    PERSONALITY_VOLUME_MULTIPLIER=pack.voice.volume_multiplier
+    BARGE_IN_STOP_COMMANDS=pack.barge_in.stop_commands
+    BARGE_IN_LISTEN_COMMANDS=pack.barge_in.listen_commands
+    BARGE_IN_WAKE_WORDS=pack.barge_in.wake_words
+    BARGE_IN_REQUIRE_WAKE_WORD=pack.barge_in.require_wake_word
+
+def _personality_ready_state():
+    if not PERSONALITIES_ENABLED: return "disabled"
+    if _personality_library is None: return "error"
+    if _personality_active is None: return "starting"
+    return "ready"
+
+def _publish_personality_state():
+    names=list(_personality_names())
+    metadata=(
+        _personality_library.metadata()
+        if _personality_library is not None
+        else {"names":names,"active_default":"legacy","personalities":{}}
+    )
+    mqtt_pub("personality/state",_personality_ready_state(),retain=True)
+    mqtt_pub("personality/active",_personality_active_name(),retain=True)
+    mqtt_pub("personality/library_count",str(len(names)),retain=True)
+    mqtt_pub("personality/library",json.dumps(metadata),retain=True)
+    default_scene=(
+        _personality_active.default_scene
+        if _personality_active is not None and _personality_active.default_scene
+        else "none"
+    )
+    mqtt_pub("personality/default_scene",default_scene,retain=True)
+    mqtt_pub("personality/switch_count",str(_personality_switch_count),retain=True)
+    mqtt_pub("personality/last_result",_personality_last_result,retain=True)
+    mqtt_pub("personality/last_error",_personality_last_error,retain=True)
+
+def _record_personality_result(result,error="none"):
+    global _personality_last_result,_personality_last_error
+    _personality_last_result=str(result)
+    _personality_last_error=str(error)[:255]
+    mqtt_pub("personality/last_result",_personality_last_result,retain=True)
+    mqtt_pub("personality/last_error",_personality_last_error,retain=True)
+
+def _init_personality_library():
+    global _personality_library,_personality_active,_personality_load_error
+    global _personality_last_result,_personality_last_error,_barge_in_matcher
+    if not PERSONALITIES_ENABLED:
+        _personality_library=None; _personality_active=None; _personality_load_error=""
+        _personality_last_result="disabled"; _personality_last_error="none"
+        _health_set("personality",ComponentState.DISABLED,"disabled by configuration")
+        _publish_personality_state()
+        return
+    try:
+        library=PersonalityLibrary.load(PERSONALITIES_PATH)
+        warning=""
+        try:
+            selected=library.select(PERSONALITY_REQUESTED or None)
+        except PersonalityConfigError as error:
+            warning=str(error)
+            selected=library.select()
+        _personality_library=library
+        _personality_active=selected
+        _personality_load_error=warning
+        _apply_personality_globals(selected)
+        _barge_in_matcher=_build_barge_in_matcher_for_pack(selected)
+        _personality_last_result="fallback" if warning else "loaded"
+        _personality_last_error=warning or "none"
+        state=ComponentState.DEGRADED if warning else ComponentState.READY
+        detail=warning or f"{selected.name}; {len(library)} packs loaded"
+        _health_set("personality",state,detail)
+        print(f"[personality] {selected.name} active; {len(library)} packs from {PERSONALITIES_PATH}")
+        if warning: print(f"[personality] {warning}; using {selected.name}")
+    except PersonalityConfigError as error:
+        _personality_library=None; _personality_active=None
+        _personality_load_error=str(error)
+        _personality_last_result="error"; _personality_last_error=str(error)
+        print(f"[personality] {error}; using legacy prompt configuration")
+        _health_set("personality",ComponentState.DEGRADED,str(error))
+    _publish_personality_state()
+
+def _validate_personality_scenes():
+    if _personality_library is None or _scene_library is None: return
+    errors=_personality_library.validate_scenes(_scene_library.names)
+    if errors:
+        detail="; ".join(errors)
+        print(f"[personality] {detail}")
+        _health_set("personality",ComponentState.DEGRADED,detail)
+
+def _publish_personality_cache(metrics):
+    cache_state="ready" if metrics.failed_entries == 0 else "partial"
+    mqtt_pub("tts/cache_state",cache_state,retain=True)
+    mqtt_pub("tts/cache_entries",str(metrics.total_entries),retain=True)
+    mqtt_pub("tts/cache_warmup_time",f"{metrics.warmup_seconds:.3f}",retain=True)
+    mqtt_pub("tts/cache_memory_kb",f"{metrics.pcm_bytes/1024.0:.1f}",retain=True)
+    for error in metrics.errors:
+        print(f"[TTS cache] skipped {error}")
+
+def _switch_personality(name):
+    global _personality_active,_personality_switch_count,_personality_last_result
+    global _personality_last_error,_llm_client,_barge_in_matcher,_idle_life
+    if _personality_library is None:
+        error=_personality_load_error or "personality library is unavailable"
+        _personality_last_result="error"; _personality_last_error=error
+        _publish_personality_state(); return
+    try:
+        pack=_personality_library.select(name)
+        if _personality_active is not None and pack.name == _personality_active.name:
+            _personality_last_result="unchanged"; _personality_last_error="none"
+            _publish_personality_state(); return
+        if (
+            pack.default_scene
+            and _scene_library is not None
+            and _scene_library.get(pack.default_scene) is None
+        ):
+            raise PersonalityConfigError(
+                f"{pack.name}: unknown default scene {pack.default_scene!r}"
+            )
+
+        mqtt_pub("personality/state","switching",retain=True)
+        new_llm=_build_llm_client_for_pack(pack)
+        new_matcher=_build_barge_in_matcher_for_pack(pack)
+        new_idle=_build_idle_life_for_pack(pack)
+        cache_metrics=None
+        wanted_lines=_canned_speech_lines(pack)
+        if _speech_engine is not None and TTS_CANNED_CACHE:
+            mqtt_pub("tts/cache_state","warming",retain=True)
+            cache_metrics=_speech_engine.cache_phrases(wanted_lines)
+
+        _apply_personality_globals(pack)
+        _personality_active=pack
+        _llm_client=new_llm
+        _barge_in_matcher=new_matcher
+        _idle_life=new_idle
+        if _speech_engine is not None and TTS_CANNED_CACHE:
+            _speech_engine.retain_cached_phrases(wanted_lines)
+            cache_metrics=replace(
+                cache_metrics,
+                total_entries=_speech_engine.cache_entries,
+                pcm_bytes=_speech_engine.cache_pcm_bytes,
+            )
+            _publish_personality_cache(cache_metrics)
+        _personality_switch_count+=1
+        _personality_last_result="switched"; _personality_last_error="none"
+        _health_set("personality",ComponentState.READY,f"{pack.name} active; {len(_personality_library)} packs loaded")
+        _publish_memory_turns(None)
+        _publish_barge_in_capability()
+        _publish_idle_life_ready_state()
+        _publish_personality_state()
+        print(f"[personality] switched to {pack.name}")
+    except Exception as error:
+        _personality_last_result="error"; _personality_last_error=str(error)[:255]
+        _health_set("personality",ComponentState.DEGRADED,str(error))
+        if _speech_engine is not None and TTS_CANNED_CACHE:
+            try:
+                _speech_engine.retain_cached_phrases(_canned_speech_lines())
+            except Exception: pass
+        _publish_personality_state()
+        print(f"[personality] switch failed: {error}")
+
+def _request_personality_switch(name):
+    requested=str(name or "").strip().lower()
+    if not requested:
+        _record_personality_result("error","personality name cannot be empty")
+        return False
+    if _personality_library is None and requested == "legacy":
+        _record_personality_result("unchanged")
+        return True
+    if controller is None or not can_switch_personality(controller.state):
+        state=controller.state.value if controller is not None else "starting"
+        _record_personality_result("busy",f"cannot switch while runtime is {state}")
+        return False
+    accepted=_enqueue(EventKind.SET_PERSONALITY,requested)
+    if not accepted:
+        _record_personality_result("error","personality switch queue is full")
+    return accepted
+
 def _configured_output_device():
     if AUDIO_OUTPUT_DEVICE is None: return None
     try: return int(AUDIO_OUTPUT_DEVICE)
@@ -1129,7 +1428,7 @@ def _init_speech_engine():
             config_path=PIPER_CONFIG,
             audio_module=sd,
             jaw_set=_jaw_set,
-            volume_getter=lambda: VOLUME,
+            volume_getter=_speech_volume,
             rest_fraction=JAW_REST_FRAC,
             maximum_fraction=JAW_MAX_FRAC,
             output_device=_configured_output_device(),
@@ -1609,6 +1908,8 @@ def _manual_trigger():
 def _handle_event(event):
     if event.kind is EventKind.TRIGGER:
         _manual_trigger()
+    elif event.kind is EventKind.SET_PERSONALITY:
+        _switch_personality(event.payload)
     elif event.kind is EventKind.PLAY_SCENE:
         _run_scene(event.payload)
     elif event.kind is EventKind.STOP_SCENE:
@@ -1676,6 +1977,8 @@ def _cleanup():
     except Exception: pass
     try: mqtt_pub("scene/state","stopping",retain=True)
     except Exception: pass
+    try: mqtt_pub("personality/state","stopping",retain=True)
+    except Exception: pass
     try: mqtt_pub("availability","offline",retain=True)
     except Exception: pass
     try: _jaw_set(JAW_REST_FRAC)
@@ -1704,8 +2007,10 @@ def main():
     signal.signal(signal.SIGINT,_signal_handler)
     signal.signal(signal.SIGTERM,_signal_handler)
     _init_health_monitor()
+    _init_personality_library()
     _do_mqtt_connect()
     _init_scene_engine()
+    _validate_personality_scenes()
     _init_speech_engine()
     _prepare_scene_sounds()
     _init_llm_client()
