@@ -13,12 +13,13 @@ holiday_skeleton/
   audio.py                   preroll, speech gate, and endpoint timing
   barge_in.py                echo-aware interruption command monitor
   brain.py                   Ollama stream producer and phrase assembly
+  idle_life.py               sparse idle-action scheduler
   speech.py                  warm Piper voice, PCM playback, and jaw envelope
   discovery.py               shared Home Assistant MQTT definitions
 tests/                       hardware-free unit tests
 ```
 
-Runtime states published to `holiday/skeleton/status` are `starting`, `idle`, `greeting`, `listening`, `thinking`, `speaking`, `effect`, `cooldown`, `stopping`, and `error`.
+Runtime states published to `holiday/skeleton/status` are `starting`, `idle`, `idle_life`, `greeting`, `listening`, `thinking`, `speaking`, `effect`, `cooldown`, `stopping`, and `error`.
 
 ## Hardware (quick)
 - **Raspberry Pi** (Bookworm OK)
@@ -51,6 +52,7 @@ views:
         title: Skeleton Main
         entities:
           - entity: switch.skeleton_motion_enabled
+          - entity: switch.skeleton_idle_life_enabled
           - entity: switch.skeleton_night_mode
           - entity: number.skeleton_eyes_dim
           - entity: number.skeleton_eyes_full
@@ -63,6 +65,9 @@ views:
         entities:
           - binary_sensor.skeleton_motion
           - binary_sensor.skeleton_speaking
+          - binary_sensor.skeleton_idle_life_active
+          - sensor.skeleton_idle_life_state
+          - sensor.skeleton_idle_life_last_action
           - sensor.skeleton_status
           - sensor.skeleton_reply_time
           - sensor.skeleton_llm_first_token
@@ -102,6 +107,12 @@ Environment="JAW_CH=0"
 Environment="JAW_MIN_US=512"
 Environment="JAW_MAX_US=1000"
 Environment="PIR_PIN=17"
+Environment="IDLE_LIFE_ENABLED=1"
+Environment="IDLE_LIFE_MIN_SEC=18.0"
+Environment="IDLE_LIFE_MAX_SEC=45.0"
+Environment="IDLE_MUTTER_CHANCE=0.12"
+Environment="IDLE_EYE_PULSE_FRAC=0.10"
+Environment="IDLE_JAW_TWITCH_FRAC=0.14"
 Environment="SPEECH_START_TIMEOUT=10.0"
 Environment="END_SILENCE_SEC=0.75"
 Environment="MAX_UTTERANCE_SEC=12.0"
@@ -135,7 +146,7 @@ The service loads `PIPER_MODEL` once during startup, runs one silent inference t
 
 The jaw follows 20 ms RMS audio frames as those same frames are written to the speaker. Change `TTS_FRAME_MS` only if the servo needs slower movement; 15–25 ms is the useful range. `AUDIO_OUTPUT_DEVICE` may be a sounddevice device index or a unique device-name substring. Leave it empty to use the system default.
 
-With `TTS_CANNED_CACHE=1` (the default), every configured morning, afternoon, evening, night, and goodbye line is synthesized silently during service startup. The raw PCM and jaw envelope stay in memory, so a motion greeting or goodbye can write its first frame immediately without invoking Piper again. Dynamic Home Assistant text and Ollama phrases still use live streaming synthesis. Cache keys normalize whitespace, and the cache belongs only to the currently loaded voice instance, so restarting after a model, voice configuration, frame-size, or prompt change cannot replay stale audio. Set `TTS_CANNED_CACHE=0` if startup time matters more than instant greetings.
+With `TTS_CANNED_CACHE=1` (the default), every configured morning, afternoon, evening, night, goodbye, and idle-mutter line is synthesized silently during service startup. The raw PCM and jaw envelope stay in memory, so a motion greeting, goodbye, or idle mutter can write its first frame immediately without invoking Piper again. Dynamic Home Assistant text and Ollama phrases still use live streaming synthesis. Cache keys normalize whitespace, and the cache belongs only to the currently loaded voice instance, so restarting after a model, voice configuration, frame-size, or prompt change cannot replay stale audio. Set `TTS_CANNED_CACHE=0` if startup time matters more than instant canned lines.
 
 Home Assistant reports:
 
@@ -200,6 +211,23 @@ The recognizer requires the same command in two consecutive partial results by d
 Set `BARGE_IN_ENABLED=0` to disable the feature. Command and wake-word lists are comma-separated. `BARGE_IN_WAKE_WORDS` defaults to `DEVICE_NAME`, so change it if the character has a more natural spoken name. If nearby speaker audio causes false interruptions, first raise `BARGE_IN_ENERGY_GATE` in increments of 50. Set `BARGE_IN_REQUIRE_WAKE_WORD=1` to reject bare commands and require forms such as `skeleton stop`; the wake name by itself still returns to listening.
 
 Barge-in requires the warm streaming Piper path because the legacy WAV player cannot be stopped safely mid-file. Home Assistant reports `ready`, `listening`, `disabled`, `legacy_tts`, `no_microphone`, or `error`, along with the last command, selected action, detection latency, and count. A microphone/full-duplex audio error affects only barge-in; normal speech continues and the next utterance retries the monitor.
+
+## Idle life
+
+When both motion and idle life are enabled, the controller schedules a sparse behavior after 18–45 seconds of uninterrupted idle time. The PIR must be clear for that whole quiet interval. It chooses a short eye pulse or small jaw twitch, with a 12% chance of speaking one configured `IDLE_LINES` mutter. The default cadence makes physical movement noticeable without turning the prop into constant background noise; a mutter occurs roughly every few minutes on average.
+
+Idle life is deliberately lower priority than every visitor or Home Assistant action. PIR activity interrupts it immediately, even before the motion hold timer confirms a full visit. Any queued MQTT command, service shutdown, or barge-in command does the same. Cached Piper mutters stop between the existing 20 ms PCM frames, the jaw returns to rest, and the foreground event then runs on the same serialized controller. When only the legacy Piper binary is available, mutters become jaw twitches because legacy WAV playback cannot be interrupted safely.
+
+Configuration:
+
+- `IDLE_LIFE_ENABLED`: startup default; the Home Assistant switch can change it until restart.
+- `IDLE_LIFE_MIN_SEC` / `IDLE_LIFE_MAX_SEC`: random quiet interval between behaviors.
+- `IDLE_MUTTER_CHANCE`: probability from `0.0` to `1.0` that a due action speaks.
+- `IDLE_EYE_PULSE_FRAC` / `IDLE_EYE_PULSE_MS`: brightness and duration of the subtle eye pulse. Night mode caps it at the dim-eye level.
+- `IDLE_JAW_TWITCH_FRAC` / `IDLE_JAW_TWITCH_MS`: portion of available jaw travel and hold duration.
+- `IDLE_LINES`: optional prompt-file list of canned mutters; these join the startup TTS cache.
+
+Turning off `switch.skeleton_motion_enabled` disarms idle life as well as visitor triggering. `switch.skeleton_idle_life_enabled` disables only ambient behaviors. Home Assistant reports `ready`, `running`, `disabled`, `disarmed`, or `stopping`, plus the latest action, total action count, and number interrupted by higher-priority activity.
 
 ## Checks
 

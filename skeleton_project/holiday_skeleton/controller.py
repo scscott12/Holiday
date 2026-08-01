@@ -23,6 +23,7 @@ class EventKind(str, Enum):
     SET_EYES_FULL = "set_eyes_full"
     SET_VOLUME = "set_volume"
     SET_MOTION_ENABLED = "set_motion_enabled"
+    SET_IDLE_LIFE_ENABLED = "set_idle_life_enabled"
     SET_NIGHT_MODE = "set_night_mode"
     RESTART = "restart"
     SHUTDOWN = "shutdown"
@@ -36,6 +37,7 @@ class RuntimeState(str, Enum):
     THINKING = "thinking"
     SPEAKING = "speaking"
     EFFECT = "effect"
+    IDLE_LIFE = "idle_life"
     COOLDOWN = "cooldown"
     STOPPING = "stopping"
     ERROR = "error"
@@ -56,11 +58,14 @@ class SkeletonController:
         handler: Callable[[Event], None],
         state_changed: Optional[Callable[[RuntimeState], None]] = None,
         max_queue_size: int = 64,
+        idle_handler: Optional[Callable[[threading.Event], None]] = None,
     ) -> None:
         self._handler = handler
         self._state_changed = state_changed
+        self._idle_handler = idle_handler
         self._queue: queue.Queue[Event] = queue.Queue(maxsize=max_queue_size)
         self._stop_event = threading.Event()
+        self._idle_interrupt = threading.Event()
         self._pending_trigger = False
         self._pending_lock = threading.Lock()
         self._state = RuntimeState.STARTING
@@ -72,6 +77,15 @@ class SkeletonController:
     @property
     def stop_event(self) -> threading.Event:
         return self._stop_event
+
+    @property
+    def idle_interrupt_event(self) -> threading.Event:
+        return self._idle_interrupt
+
+    def interrupt_idle(self) -> None:
+        """Ask an in-progress idle behavior to yield without queuing work."""
+
+        self._idle_interrupt.set()
 
     def set_state(self, state: RuntimeState) -> None:
         if state == self._state:
@@ -96,6 +110,8 @@ class SkeletonController:
         if self._stop_event.is_set() and kind is not EventKind.SHUTDOWN:
             return False
 
+        self.interrupt_idle()
+
         if kind is EventKind.TRIGGER:
             with self._pending_lock:
                 if self._pending_trigger:
@@ -113,6 +129,7 @@ class SkeletonController:
 
     def request_stop(self, source: str = "runtime") -> None:
         self._stop_event.set()
+        self.interrupt_idle()
         try:
             self._queue.put_nowait(Event(EventKind.SHUTDOWN, source=source))
         except queue.Full:
@@ -122,9 +139,22 @@ class SkeletonController:
     def run_forever(self) -> None:
         self.set_state(RuntimeState.IDLE)
         while not self._stop_event.is_set():
+            if self._state is RuntimeState.IDLE:
+                self._idle_interrupt.clear()
             try:
                 event = self._queue.get(timeout=0.25)
             except queue.Empty:
+                if (
+                    self._idle_handler is not None
+                    and self._state is RuntimeState.IDLE
+                    and not self._idle_interrupt.is_set()
+                    and not self._stop_event.is_set()
+                ):
+                    try:
+                        self._idle_handler(self._idle_interrupt)
+                    except Exception:
+                        self.set_state(RuntimeState.ERROR)
+                        raise
                 continue
 
             if event.kind is EventKind.SHUTDOWN:
@@ -143,4 +173,3 @@ class SkeletonController:
                 self._queue.task_done()
 
         self.set_state(RuntimeState.STOPPING)
-

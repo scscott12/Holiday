@@ -52,7 +52,7 @@ pip install paho-mqtt
 - Speech: Piper loads once at service startup and streams PCM directly to the output device.
 - AUDIO_OUTPUT_DEVICE may be a sounddevice index or unique name substring; blank uses the system default.
 - TTS_FRAME_MS=20 controls both PCM write and jaw-envelope resolution.
-- TTS_CANNED_CACHE=1 pre-renders all opening/goodbye lines during startup so motion greetings avoid live synthesis.
+- TTS_CANNED_CACHE=1 pre-renders opening/goodbye/idle lines so canned speech avoids live synthesis.
 - Ollama streams in the background while Piper speaks completed phrases.
 - LLM_PHRASE_MIN_CHARS / SOFT_CHARS / MAX_CHARS tune natural phrase boundaries.
 - Ollama uses /api/chat and remembers the latest LLM_MEMORY_TURNS exchanges for one visit.
@@ -63,6 +63,9 @@ pip install paho-mqtt
 - Raise BARGE_IN_ENERGY_GATE if speaker echo causes false interruptions.
 - Set BARGE_IN_REQUIRE_WAKE_WORD=1 if bare commands are still too sensitive.
 - Barge-in requires streaming Piper; legacy WAV mode reports legacy_tts and remains uninterrupted.
+- IDLE_LIFE_ENABLED=1 adds sparse eye pulses, jaw twitches, and occasional mutters while motion is armed.
+- IDLE_LIFE_MIN_SEC / MAX_SEC control cadence; IDLE_MUTTER_CHANCE controls how often an action speaks.
+- Idle actions yield immediately to PIR, MQTT, shutdown, and barge-in. Legacy TTS safely skips mutters.
 - EYES_INVERT=1 if your LED driver is active-low.
 - JAW_MIN_US/JAW_MAX_US to set jaw travel.
 - Eyes Dim/Full % and Volume % are "number" controls in HA with box entry.
@@ -83,7 +86,7 @@ sudo journalctl -u holiday-skeleton -f
 
 # Expected once during startup:
 # [TTS] Piper voice warm and output stream ready in ...s
-# [TTS cache] 15/15 canned lines ready in ...s (... KiB)
+# [TTS cache] 20/20 canned lines ready in ...s (... KiB) with default prompts
 # Then send two Say commands. Both should use tts/engine=streaming and no /tmp WAV.
 # Trigger motion twice. Each configured opener should set tts/cache_hit=ON and
 # greeting_first_audio should be near zero. Dynamic Say text should report OFF.
@@ -95,3 +98,6 @@ sudo journalctl -u holiday-skeleton -f
 # barge_in/last_action=listen, and the skeleton accepts the next visitor sentence.
 # Repeat with "stop" and confirm the visit ends without a goodbye. Verify a
 # normal reply containing a command word does not interrupt itself.
+# Leave it idle and confirm idle_life/state changes ready -> running -> ready.
+# During a mutter, trigger motion and confirm audio stops, the jaw rests, the
+# interrupted count increments, and the visitor greeting starts next.

@@ -6,6 +6,7 @@ views:
         title: Skeleton Main
         entities:
           - switch.skeleton_motion_enabled
+          - switch.skeleton_idle_life_enabled
           - switch.skeleton_night_mode
           - number.skeleton_eyes_dim
           - number.skeleton_eyes_full
@@ -23,6 +24,11 @@ views:
           - sensor.skeleton_barge_in_state
           - sensor.skeleton_last_barge_in_command
           - sensor.skeleton_barge_in_latency
+          - binary_sensor.skeleton_idle_life_active
+          - sensor.skeleton_idle_life_state
+          - sensor.skeleton_idle_life_last_action
+          - sensor.skeleton_idle_life_count
+          - sensor.skeleton_idle_life_interrupted
           - sensor.skeleton_status
           - sensor.skeleton_reply_time
           - sensor.skeleton_llm_first_token
