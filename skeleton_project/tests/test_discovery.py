@@ -153,6 +153,27 @@ class DiscoveryTests(unittest.TestCase):
             "holiday/skeleton/settings/last_error",
         )
 
+    def test_maintenance_lockout_controls_and_diagnostics_are_discovered(self):
+        messages = dict(discovery_messages("skeleton"))
+
+        lockout = messages[
+            "homeassistant/switch/skeleton/maintenance_mode/config"
+        ]
+        self.assertEqual(lockout["cmd_t"], "holiday/skeleton/maintenance/set")
+        self.assertEqual(lockout["stat_t"], "holiday/skeleton/maintenance/enabled")
+        self.assertEqual(
+            messages[
+                "homeassistant/sensor/skeleton/maintenance_state/config"
+            ]["stat_t"],
+            "holiday/skeleton/maintenance/state",
+        )
+        self.assertEqual(
+            messages[
+                "homeassistant/sensor/skeleton/maintenance_since/config"
+            ]["device_class"],
+            "timestamp",
+        )
+
     def test_transactional_content_reload_is_discovered(self):
         messages = dict(discovery_messages("skeleton"))
 

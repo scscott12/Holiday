@@ -199,6 +199,24 @@ class RuntimeContentReloadTests(unittest.TestCase):
         self.assertIn(("content_reload/last_result", "busy"), published)
         self.assertIn(("content_reload/last_error", "controller is speaking"), published)
 
+    def test_request_is_allowed_during_maintenance_lockout(self):
+        enqueue = mock.Mock(return_value=True)
+        with mock.patch.multiple(
+            runtime,
+            controller=SimpleNamespace(state=RuntimeState.MAINTENANCE),
+            _content_reload_active=False,
+            _content_reload_pending=False,
+            mqtt_pub=mock.DEFAULT,
+            _enqueue=enqueue,
+        ):
+            accepted = runtime._request_content_reload()
+
+        self.assertTrue(accepted)
+        enqueue.assert_called_once_with(
+            runtime.EventKind.RELOAD_CONTENT,
+            source="mqtt",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

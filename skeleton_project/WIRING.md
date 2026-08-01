@@ -8,3 +8,6 @@ WIRING (PCA9685 + Pi + Servo + LEDs)
 - Eyes LEDs (CH4): Use a transistor/MOSFET and series resistor; never drive LED directly from PCA output.
 - PIR: OUT -> GPIO17, VCC -> 5V (module dependent), GND -> GND
 - COMMON GROUND: External 5V, PCA9685, and Pi must share ground.
+- MAINTENANCE MODE: Use the software lockout for powered observation and tuning;
+  disconnect servo/LED power before hands-on linkage or wiring work. The Home
+  Assistant switch is not an electrical disconnect.

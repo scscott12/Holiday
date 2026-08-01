@@ -23,6 +23,7 @@ def sample_settings(**overrides):
         "eyes_full": 0.48,
         "volume": 0.54,
         "day_profile": DayProfile(eyes_dim=0.18, eyes_full=0.8, volume=0.9),
+        "maintenance_mode": True,
     }
     values.update(overrides)
     return OperatorSettings(**values)
@@ -72,6 +73,7 @@ class OperatorSettingsStoreTests(unittest.TestCase):
                 "motion_enabled",
                 "idle_life_enabled",
                 "night_mode",
+                "maintenance_mode",
                 "eyes_dim",
                 "eyes_full",
                 "volume",
@@ -83,10 +85,15 @@ class OperatorSettingsStoreTests(unittest.TestCase):
             self.assertNotIn(forbidden, serialized)
 
     def test_rejects_incompatible_unknown_and_missing_fields(self):
-        payload = sample_settings().to_payload()
-        payload["version"] = 2
-        with self.assertRaisesRegex(SettingsConfigError, "unsupported settings version"):
-            settings_from_payload(payload)
+        for version in (3, True):
+            with self.subTest(version=version):
+                payload = sample_settings().to_payload()
+                payload["version"] = version
+                with self.assertRaisesRegex(
+                    SettingsConfigError,
+                    "unsupported settings version",
+                ):
+                    settings_from_payload(payload)
 
         payload = sample_settings().to_payload()
         payload["settings"]["secret"] = "do not persist this"
@@ -98,10 +105,21 @@ class OperatorSettingsStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(SettingsConfigError, "missing fields: motion_enabled"):
             settings_from_payload(payload)
 
+    def test_version_one_file_migrates_with_maintenance_unlocked(self):
+        payload = sample_settings().to_payload()
+        payload["version"] = 1
+        payload["settings"].pop("maintenance_mode")
+
+        restored = settings_from_payload(payload)
+
+        self.assertFalse(restored.maintenance_mode)
+        self.assertEqual(restored.personality, "graveyard_host")
+
     def test_rejects_invalid_names_types_ranges_and_non_finite_numbers(self):
         cases = (
             ("personality", "../escape", "safe lowercase name"),
             ("motion_enabled", 1, "true or false"),
+            ("maintenance_mode", "yes", "true or false"),
             ("eyes_dim", -0.1, "between 0 and 1"),
             ("eyes_full", float("nan"), "between 0 and 1"),
             ("volume", 2.1, "between 0 and 2"),

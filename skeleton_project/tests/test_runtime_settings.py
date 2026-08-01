@@ -35,6 +35,7 @@ class RuntimeSettingsTests(unittest.TestCase):
             motion_enabled=False,
             idle_life_enabled=False,
             night_mode=True,
+            maintenance_mode=True,
             eyes_dim=0.05,
             eyes_full=0.4,
             volume=0.5,
@@ -54,6 +55,7 @@ class RuntimeSettingsTests(unittest.TestCase):
                 motion_enabled=True,
                 IDLE_LIFE_ENABLED=True,
                 night_mode=False,
+                maintenance_mode=False,
                 EYES_LISTEN_FRAC=0.18,
                 EYES_SPEAK_FRAC=1.0,
                 VOLUME=1.0,
@@ -69,6 +71,7 @@ class RuntimeSettingsTests(unittest.TestCase):
                 self.assertFalse(runtime.motion_enabled)
                 self.assertFalse(runtime.IDLE_LIFE_ENABLED)
                 self.assertTrue(runtime.night_mode)
+                self.assertTrue(runtime.maintenance_mode)
                 self.assertEqual(runtime.EYES_LISTEN_FRAC, 0.05)
                 self.assertEqual(runtime.EYES_SPEAK_FRAC, 0.4)
                 self.assertEqual(runtime.VOLUME, 0.5)
@@ -99,6 +102,7 @@ class RuntimeSettingsTests(unittest.TestCase):
             motion_enabled=True,
             IDLE_LIFE_ENABLED=True,
             night_mode=False,
+            maintenance_mode=False,
             EYES_LISTEN_FRAC=0.18,
             EYES_SPEAK_FRAC=1.0,
             VOLUME=1.0,
@@ -121,6 +125,7 @@ class RuntimeSettingsTests(unittest.TestCase):
             runtime,
             _settings_store=store,
             night_mode=False,
+            maintenance_mode=False,
             VOLUME=1.0,
             _day={"listen": None, "speak": None, "vol": None},
             _health_set=mock.DEFAULT,
@@ -160,6 +165,7 @@ class RuntimeSettingsTests(unittest.TestCase):
                 PERSIST_SETTINGS_PATH=str(path),
                 PERSONALITY_REQUESTED="pirate",
                 motion_enabled=True,
+                maintenance_mode=False,
                 _settings_store=None,
                 _settings_loaded=None,
                 _health_set=mock.DEFAULT,

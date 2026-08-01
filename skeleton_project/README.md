@@ -26,7 +26,7 @@ holiday_skeleton/
 tests/                       hardware-free unit tests
 ```
 
-Runtime states published to `holiday/skeleton/status` are `starting`, `idle`, `idle_life`, `scene`, `self_test`, `content_reload`, `greeting`, `listening`, `thinking`, `speaking`, `effect`, `cooldown`, `stopping`, and `error`.
+Runtime states published to `holiday/skeleton/status` are `starting`, `idle`, `maintenance`, `idle_life`, `scene`, `self_test`, `content_reload`, `greeting`, `listening`, `thinking`, `speaking`, `effect`, `cooldown`, `stopping`, and `error`.
 
 ## Hardware (quick)
 - **Raspberry Pi** (Bookworm OK)
@@ -58,6 +58,7 @@ views:
       - type: entities
         title: Skeleton Main
         entities:
+          - entity: switch.skeleton_maintenance_mode
           - entity: switch.skeleton_motion_enabled
           - entity: switch.skeleton_idle_life_enabled
           - entity: switch.skeleton_night_mode
@@ -91,6 +92,10 @@ views:
           - sensor.skeleton_saved_settings_state
           - sensor.skeleton_settings_last_saved
           - sensor.skeleton_settings_last_error
+          - sensor.skeleton_maintenance_state
+          - sensor.skeleton_maintenance_last_result
+          - sensor.skeleton_maintenance_last_error
+          - sensor.skeleton_maintenance_blocked_commands
           - binary_sensor.skeleton_self_test_active
           - sensor.skeleton_self_test_state
           - sensor.skeleton_self_test_step
@@ -165,6 +170,7 @@ Environment="PERSONALITIES_PATH=/opt/holiday-skeleton/personalities.json"
 Environment="PERSONALITY=pirate"
 Environment="PERSIST_SETTINGS_ENABLED=1"
 Environment="PERSIST_SETTINGS_PATH=/var/lib/holiday-skeleton/operator-settings.json"
+Environment="MAINTENANCE_MODE=0"
 Environment="HEALTH_INTERVAL_SEC=30"
 Environment="HEALTH_LATENCY_WINDOW=20"
 Environment="HEALTH_TEMP_WARN_C=75"
@@ -302,7 +308,7 @@ Turning off `switch.skeleton_motion_enabled` disarms idle life as well as visito
 - stop, listen, and wake-word grammar for command-only barge-in;
 - one default scene available through the **Play Personality Scene** button.
 
-The packaged library includes `pirate`, `graveyard_host`, and `silent_watcher`. Set `PERSONALITY` for the first-run selection or use `select.skeleton_personality` while the service is running; once operator persistence has saved a selection, that value wins across restarts. Switching requires no restart, but it is accepted only while the controller is `idle` or `cooldown`; a request during a greeting, visit, response, scene, or idle behavior returns `busy` and leaves the active pack untouched.
+The packaged library includes `pirate`, `graveyard_host`, and `silent_watcher`. Set `PERSONALITY` for the first-run selection or use `select.skeleton_personality` while the service is running; once operator persistence has saved a selection, that value wins across restarts. Switching requires no restart, but it is accepted only while the controller is `idle`, `cooldown`, or safely locked in `maintenance`; a request during a greeting, visit, response, scene, or idle behavior returns `busy` and leaves the active pack untouched.
 
 An accepted switch prepares the incoming Ollama client, barge-in grammar, idle scheduler, and canned-speech cache before changing the active pack. Conversation memory is already empty at this boundary and is explicitly reported as zero. Invalid settings, unknown pack names, unsafe scene names, and missing named scenes cannot partially replace a running personality during a live switch. Startup cross-checks every pack's default scene and reports any mismatch as degraded configuration. If the personality file cannot load at startup, the legacy built-in prompt and optional `prompts.json` override remain available while health reports the configuration error.
 
@@ -317,6 +323,7 @@ With `PERSIST_SETTINGS_ENABLED=1` (the default), Home Assistant changes survive 
 - the active personality;
 - motion and idle-life enable switches;
 - night-mode state;
+- maintenance lockout state;
 - current eye levels and volume; and
 - the daytime eye/volume profile needed to leave night mode correctly.
 
@@ -325,6 +332,16 @@ Visitor audio, recognized text, transcripts, conversation memory, prompts, broke
 The controller writes a complete temporary JSON document with `0600` permissions, flushes it to disk, then atomically replaces `/var/lib/holiday-skeleton/operator-settings.json`. The packaged systemd service creates `/var/lib/holiday-skeleton` for the service account. A failed write leaves the previous document intact; a missing, malformed, oversized, incompatible, or out-of-range document is ignored and reported as a degraded `settings` component while configured environment defaults continue to run.
 
 Saved operator values take precedence over their corresponding environment defaults after the first successful Home Assistant change. `sensor.skeleton_saved_settings_state` reports `empty`, `restored`, `saved`, `disabled`, or `error`; the last-save and last-error sensors provide deployment diagnostics. To return to environment defaults, stop the service, move the JSON file to a backup name, and start the service again.
+
+Version-1 settings files are accepted and migrated with maintenance mode safely defaulted to off. New saves use version 2.
+
+## Maintenance lockout
+
+Turn on `switch.skeleton_maintenance_mode` before working on the hanging prop, servo linkage, LEDs, amplifier, or speaker. The request has priority over ordinary queued commands and raises a safety interlock immediately; streaming audio, legacy Piper/aplay, listening, LLM generation, scenes, idle actions, self-test, and eye effects all yield. Every eye write is forced off and every jaw write is forced to the configured rest position until the controller completes the lock transition.
+
+While locked, PIR activity is still reported but cannot start a visit. Home Assistant speech, scene, blink, flicker, manual-motion, personality-scene, and self-test commands are rejected instead of being delayed until unlock. Brightness, volume, motion/idle enable values, night mode, personality selection, transactional content reload, restart, and unlock remain available because they do not intentionally actuate the prop; brightness changes are saved but the physical eyes remain off.
+
+The lockout persists through normal service and Pi restarts when operator persistence is enabled. If the state file cannot be written, the live lock remains active and Home Assistant reports `locked_unsaved`; a later restart then uses the configured `MAINTENANCE_MODE` default. Invalid MQTT values cannot unlock the prop. Home Assistant also exposes lock state, last result/error, state-change time, and rejected-command count. Maintenance mode is an operating interlock, not an electrical disconnect—remove power before placing hands in a mechanism that could be energized by wiring faults or independent hardware.
 
 ## Scene engine
 
@@ -357,11 +374,11 @@ Home Assistant exposes scene readiness, available names, active scene, current s
 
 ## Live content reload
 
-The **Reload Content** Home Assistant button replaces `personalities.json`, `scenes.json`, and referenced scene WAVs without restarting the service. The request is accepted only while the serialized controller is `idle` or `cooldown`; visits, speech, scenes, self-tests, and idle actions return `busy` and continue undisturbed.
+The **Reload Content** Home Assistant button replaces `personalities.json`, `scenes.json`, and referenced scene WAVs without restarting the service. The request is accepted only while the serialized controller is `idle`, `cooldown`, or locked in `maintenance`; visits, speech, scenes, self-tests, and idle actions return `busy` and continue undisturbed.
 
 Reload is transactional. The runtime first loads both enabled JSON libraries into new immutable objects, requires the currently active personality to still exist, validates every personality default-scene reference, reads every referenced WAV within `SCENE_SOUND_DIR`, rebuilds the active Ollama/barge-in/idle configuration, and pre-renders all required canned speech when the streaming engine and cache are enabled. Reload JSON is capped at 1 MiB per file, decoded scene audio at 64 MiB total, and canned speech at 256 unique lines/64 KiB of text to prevent an accidental Raspberry Pi memory or warmup spike. Only after every step succeeds does the controller swap all active references together. A malformed file, missing cue, invalid cross-reference, oversized candidate, or speech-cache failure leaves the last known-good libraries and visitor behavior unchanged.
 
-PIR activity, a later queued MQTT command, or shutdown can interrupt preparation before the commit. New canned cache entries are pruned and the active content remains unchanged. Home Assistant reports `ready`, `queued`, `reloading`, `error`, `disabled`, or `stopping`, plus last result/error/time/duration, completed attempt count, and interruption count. A failed reload degrades only the `content_reload` health component; the still-active personality and scenes remain usable.
+Outside maintenance lockout, PIR activity, a later queued MQTT command, or shutdown can interrupt preparation before the commit. While maintenance is locked, PIR remains observable but is intentionally suppressed so hands-on movement does not cancel a safe content update. New canned cache entries are pruned and the active content remains unchanged after any interruption. Home Assistant reports `ready`, `queued`, `reloading`, `error`, `disabled`, or `stopping`, plus last result/error/time/duration, completed attempt count, and interruption count. A failed reload degrades only the `content_reload` health component; the still-active personality and scenes remain usable.
 
 Set `CONTENT_RELOAD_ENABLED=0` to remove the live operation while retaining normal startup loading. Reload changes content only: it never reads or writes visitor transcripts, conversation memory, MQTT credentials, or saved operator settings.
 

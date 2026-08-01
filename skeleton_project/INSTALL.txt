@@ -77,10 +77,13 @@ pip install paho-mqtt
 - A pack changes prompts, canned lines, reply bounds, voice volume, barge-in words, idle mutters, and its default scene together.
 - Pack switching is rejected while a visit, scene, speech, or idle behavior is active.
 - CONTENT_RELOAD_ENABLED=1 adds a transactional Reload Content button for personalities, scenes, and WAV cues.
-- Reload is accepted only while idle; invalid or interrupted preparation keeps the last known-good content active.
+- Reload is accepted while idle or maintenance-locked; invalid or interrupted preparation keeps the last known-good content active.
 - PERSIST_SETTINGS_ENABLED=1 restores operator controls after service/Pi restarts.
-- Only personality, switches, night mode, eye levels, and volume are saved; visitor speech and credentials are never written.
+- Only personality, switches, night/maintenance mode, eye levels, and volume are saved; visitor speech and credentials are never written.
 - The packaged service owns /var/lib/holiday-skeleton and writes the state file atomically with 0600 permissions.
+- MAINTENANCE_MODE=0 is the first-run default. Turn on the Home Assistant
+  Maintenance Mode switch before working on the prop; it forces eyes off and
+  the jaw to rest, blocks actuation commands, and persists when settings are enabled.
 - HEALTH_INTERVAL_SEC=30 publishes component health, Pi telemetry, and latency statistics without blocking audio.
 - HEALTH_LATENCY_WINDOW=20 controls the recent-turn rolling average/P95 window.
 - CPU temperature, disk use, current throttle flags, Piper availability, and Ollama are evaluated automatically.
@@ -160,3 +163,10 @@ sudo journalctl -u holiday-skeleton -f
 # the prior scenes/personality remain available, and normal motion still works.
 # Start one more reload and trigger the PIR during canned-speech preparation;
 # confirm the result is interrupted and the visitor flow takes priority.
+# Start a scene or long Say command, then turn on Maintenance Mode. Confirm
+# audio stops, the eyes turn fully off, the jaw returns to rest, status becomes
+# maintenance, and queued actuation commands report blocked rather than running.
+# Trigger the PIR and press Scene/Self-Test/Blink while locked; motion may still
+# report ON, but no output may move or speak. Change an eye level and confirm it
+# is saved without lighting the eyes. Restart the service and confirm the lock
+# returns, then turn Maintenance Mode off and run the manual self-test normally.

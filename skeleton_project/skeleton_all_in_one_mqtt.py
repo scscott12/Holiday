@@ -158,6 +158,9 @@ PERSIST_SETTINGS_PATH = envs(
     "PERSIST_SETTINGS_PATH",
     "/var/lib/holiday-skeleton/operator-settings.json",
 )
+MAINTENANCE_MODE_DEFAULT = envs("MAINTENANCE_MODE","0").strip().lower() in (
+    "1","true","yes","on"
+)
 
 HEALTH_INTERVAL_SEC = float(envs("HEALTH_INTERVAL_SEC","30"))
 HEALTH_LATENCY_WINDOW = int(envs("HEALTH_LATENCY_WINDOW","20"))
@@ -300,6 +303,13 @@ _self_test_count=0
 _self_test_interrupted=0
 _self_test_report="{}"
 
+maintenance_mode=MAINTENANCE_MODE_DEFAULT
+_maintenance_state="starting"
+_maintenance_last_result="never"
+_maintenance_last_error="none"
+_maintenance_since="never"
+_maintenance_rejected_count=0
+
 def pick_opening_line()->str:
     hr=datetime.now().hour
     if 5<=hr<12: return random.choice(MORNING_LINES)
@@ -376,6 +386,17 @@ _runtime_ready=False
 controller=None
 _health=None
 _watchdog=None
+
+def _maintenance_stop_requested():
+    interrupt=(
+        getattr(controller,"maintenance_interrupt_event",None)
+        if controller is not None
+        else None
+    )
+    return bool(
+        maintenance_mode
+        or (interrupt is not None and interrupt.is_set())
+    )
 
 def mqtt_pub(topic,payload,retain=False):
     try:
@@ -491,8 +512,51 @@ def _enqueue(kind,payload=None,source="mqtt"):
         print(f"[controller] coalesced or dropped {kind.value} from {source}")
     return accepted
 
+_MAINTENANCE_BLOCKED_EVENTS={
+    EventKind.TRIGGER,
+    EventKind.SAY,
+    EventKind.BLINK,
+    EventKind.FLICKER,
+    EventKind.PLAY_SCENE,
+    EventKind.RUN_SELF_TEST,
+}
+
+def _record_maintenance_result(result,error="none"):
+    global _maintenance_last_result,_maintenance_last_error
+    _maintenance_last_result=str(result)
+    _maintenance_last_error=str(error or "none")[:255]
+    _publish_maintenance_state()
+
+def _maintenance_reject(action):
+    global _maintenance_rejected_count
+    _maintenance_rejected_count+=1
+    _record_maintenance_result(
+        "blocked",
+        f"maintenance lockout blocked {str(action or 'command')}",
+    )
+    return False
+
+def _maintenance_topic_action(topic):
+    blocked={
+        "/motion/trigger/set":"motion trigger",
+        "/say/set":"speech",
+        "/blink/set":"blink",
+        "/flicker/set":"flicker",
+        "/scene/play/set":"scene",
+        "/personality/default_scene/play/set":"personality scene",
+        "/self_test/run/set":"self-test",
+    }
+    return next((label for suffix,label in blocked.items() if topic.endswith(suffix)),None)
+
 def _on_message(client,userdata,msg):
     t=msg.topic; p=msg.payload.decode("utf-8","ignore").strip()
+    if t.endswith("/maintenance/set"):
+        _request_maintenance_mode(p)
+        return
+    blocked_action=_maintenance_topic_action(t)
+    if _maintenance_stop_requested() and blocked_action:
+        _maintenance_reject(blocked_action)
+        return
     if t.endswith("/content/reload/set"):
         _request_content_reload()
         return
@@ -549,7 +613,8 @@ def _on_connect(client,userdata,flags,rc,properties=None):
               "motion/trigger/set","motion/enabled/set","idle_life/enabled/set",
               "scene/play/set","scene/stop/set","personality/set",
               "personality/default_scene/play/set","self_test/run/set",
-              "self_test/stop/set","content/reload/set","night_mode/set","restart/set"]
+              "self_test/stop/set","content/reload/set","night_mode/set",
+              "maintenance/set","restart/set"]
         for path in subs:
             try: client.subscribe(f"{MQTT_BASE}/{path}")
             except Exception as e: print("[mqtt subscribe]",e)
@@ -558,6 +623,7 @@ def _on_connect(client,userdata,flags,rc,properties=None):
         if _scene_library is not None: _publish_scene_ready_state()
         _publish_personality_state()
         _publish_operator_controls()
+        _publish_maintenance_state()
         _publish_settings_state()
         _publish_self_test_state()
         _publish_content_reload_state()
@@ -589,6 +655,7 @@ _eyes_effect_thread=None; _eyes_effect_stop=threading.Event(); _eyes_lock=thread
 
 def eyes_set(frac:float):
     frac=clamp(float(frac),0.0,1.0)
+    if _maintenance_stop_requested(): frac=0.0
     if EYES_INVERT: frac=1.0-frac
     with _eyes_lock:
         if _eyes_ch is None: return False
@@ -612,15 +679,25 @@ def eyes_idle():   _stop_eyes_effect(); eyes_set(EYES_IDLE_FRAC)
 def eyes_listen(): _stop_eyes_effect(); eyes_set(EYES_LISTEN_FRAC)
 def eyes_speak():  _stop_eyes_effect(); eyes_set(EYES_SPEAK_FRAC)
 
+def _eyes_effect_wait(seconds):
+    deadline=time.monotonic()+max(0.0,float(seconds))
+    while True:
+        if _eyes_effect_stop.is_set() or _maintenance_stop_requested(): return True
+        remaining=deadline-time.monotonic()
+        if remaining <= 0: return False
+        if _eyes_effect_stop.wait(min(0.02,remaining)): return True
+
 def eyes_blink(count=6, period_ms=120, low=0.0, high=None, blocking=False):
     global _eyes_effect_thread,_eyes_effect_stop
     _stop_eyes_effect(); high = EYES_SPEAK_FRAC if high is None else clamp(high,0,1)
     def run():
         for _ in range(max(1,int(count))):
-            if _eyes_effect_stop.is_set(): break
-            eyes_set(high); time.sleep(max(0.01, period_ms/1000.0/2))
-            eyes_set(low);  time.sleep(max(0.01, period_ms/1000.0/2))
-        eyes_set(EYES_IDLE_FRAC)
+            if _eyes_effect_stop.is_set() or _maintenance_stop_requested(): break
+            eyes_set(high)
+            if _eyes_effect_wait(max(0.01,period_ms/1000.0/2)): break
+            eyes_set(low)
+            if _eyes_effect_wait(max(0.01,period_ms/1000.0/2)): break
+        eyes_set(0.0 if _maintenance_stop_requested() else EYES_IDLE_FRAC)
     _eyes_effect_thread=threading.Thread(target=run,daemon=True); _eyes_effect_thread.start()
     if blocking: _eyes_effect_thread.join()
 
@@ -628,15 +705,21 @@ def eyes_flicker(duration_s=5.0, base=0.2, span=0.7, step_ms=60, blocking=False)
     global _eyes_effect_thread,_eyes_effect_stop
     _stop_eyes_effect(); base=clamp(base,0,1); span=clamp(span,0,1-base); start=time.time()
     def run():
-        while time.time()-start<duration_s and not _eyes_effect_stop.is_set():
-            eyes_set(base+random.random()*span); time.sleep(max(0.02, step_ms/1000.0))
-        eyes_set(EYES_IDLE_FRAC)
+        while (
+            time.time()-start<duration_s
+            and not _eyes_effect_stop.is_set()
+            and not _maintenance_stop_requested()
+        ):
+            eyes_set(base+random.random()*span)
+            if _eyes_effect_wait(max(0.02,step_ms/1000.0)): break
+        eyes_set(0.0 if _maintenance_stop_requested() else EYES_IDLE_FRAC)
     _eyes_effect_thread=threading.Thread(target=run,daemon=True); _eyes_effect_thread.start()
     if blocking: _eyes_effect_thread.join()
 
 def _jaw_set(frac:float):
     try:
         if _jaw is None: return False
+        if _maintenance_stop_requested(): frac=JAW_REST_FRAC
         _jaw.fraction=clamp(frac,0,1)
         return True
     except Exception as e:
@@ -661,15 +744,36 @@ def jaw_env_from_wav(path:str):
     except Exception as e:
         print("[jaw env]",e); return np.array([0.0],dtype=np.float32)
 
-def jaw_drive_by_env(env:np.ndarray, rest=JAW_REST_FRAC, mx=JAW_MAX_FRAC, period=0.02):
-    for v in env: _jaw_set(rest+(mx-rest)*float(v)); time.sleep(period)
+def _stop_wait(stop_event,duration,quantum=0.01):
+    deadline=time.monotonic()+max(0.0,float(duration))
+    while True:
+        if stop_event is not None and stop_event.is_set(): return True
+        remaining=deadline-time.monotonic()
+        if remaining <= 0: return False
+        time.sleep(min(max(0.001,float(quantum)),remaining))
+
+def jaw_drive_by_env(
+    env:np.ndarray,
+    rest=JAW_REST_FRAC,
+    mx=JAW_MAX_FRAC,
+    period=0.02,
+    stop_event=None,
+):
+    for v in env:
+        if stop_event is not None and stop_event.is_set(): break
+        _jaw_set(rest+(mx-rest)*float(v))
+        if _stop_wait(stop_event,period): break
     _jaw_set(rest)
 
-def jaw_chatter_fallback(text:str):
+def jaw_chatter_fallback(text:str,stop_event=None):
     dur=clamp(1.1+0.05*len(text),1.0,6.0); end=time.time()+dur
     rest,open_=JAW_REST_FRAC,JAW_MAX_FRAC
     while time.time()<end:
-        _jaw_set(open_); time.sleep(0.09); _jaw_set(rest); time.sleep(0.07)
+        if stop_event is not None and stop_event.is_set(): break
+        _jaw_set(open_)
+        if _stop_wait(stop_event,0.09): break
+        _jaw_set(rest)
+        if _stop_wait(stop_event,0.07): break
     _jaw_set(rest)
 
 def _amplify_wav_inplace(path:str, volume:float):
@@ -681,10 +785,6 @@ def _amplify_wav_inplace(path:str, volume:float):
         data=np.clip(np.round(data*volume),-32768,32767).astype(np.int16)
         with wave.open(path,"wb") as wf2: wf2.setparams(params); wf2.writeframes(data.tobytes())
     except Exception as e: print("[volume]",e)
-
-def speak_wav_play(path:str):
-    try: subprocess.run(["aplay","-q",path],check=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-    except Exception as e: print("[aplay]",e)
 
 def _speech_volume():
     return clamp(VOLUME*PERSONALITY_VOLUME_MULTIPLIER,0.0,2.0)
@@ -703,6 +803,7 @@ _barge_in_matcher=BargeInMatcher(
 def _barge_in_supported():
     return bool(
         BARGE_IN_ENABLED
+        and not _maintenance_stop_requested()
         and _speech_engine is not None
         and stt_enabled
         and sd is not None
@@ -712,7 +813,9 @@ def _barge_in_supported():
     )
 
 def _publish_barge_in_capability():
-    if _barge_in_supported():
+    if _maintenance_stop_requested():
+        state="maintenance"
+    elif _barge_in_supported():
         state="ready"
     elif not BARGE_IN_ENABLED:
         state="disabled"
@@ -728,8 +831,13 @@ def _publish_barge_in_capability():
     mqtt_pub("barge_in/count",str(_barge_in_count),retain=True)
     if state == "ready":
         _health_set("barge_in",ComponentState.READY,"command monitor ready")
-    elif state == "disabled":
-        _health_set("barge_in",ComponentState.DISABLED,"disabled by configuration")
+    elif state in ("disabled","maintenance"):
+        detail=(
+            "operator maintenance lockout"
+            if state == "maintenance"
+            else "disabled by configuration"
+        )
+        _health_set("barge_in",ComponentState.DISABLED,detail)
     else:
         _health_set("barge_in",ComponentState.DEGRADED,state)
 
@@ -753,7 +861,14 @@ def _start_barge_in_monitor():
         energy_threshold=BARGE_IN_ENERGY_GATE,
         minimum_voiced_seconds=BARGE_IN_MIN_VOICED_SEC,
         partial_confirmations=BARGE_IN_PARTIAL_CONFIRMATIONS,
-        parent_stop_event=controller.stop_event if controller is not None else None,
+        parent_stop_event=(
+            AnyStopEvent(
+                controller.stop_event,
+                controller.maintenance_interrupt_event,
+            )
+            if controller is not None
+            else None
+        ),
     ).start()
     mqtt_pub("barge_in/active","ON")
     mqtt_pub("barge_in/state","listening")
@@ -784,21 +899,55 @@ def _finish_barge_in_monitor(monitor):
         )
     return result
 
-def _legacy_speak_with_jaw(text:str):
+def _legacy_speak_with_jaw(text:str,stop_event=None):
     """Compatibility path for installs that have not added piper-tts yet."""
+    if stop_event is not None and stop_event.is_set(): return
     try:
         p=subprocess.Popen([PIPER_BIN,"-m",PIPER_MODEL,"-f",TTS_WAV,"-q"],stdin=subprocess.PIPE,text=True,
                            stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        p.communicate(input=text)
+        p.stdin.write(text)
+        p.stdin.close()
+        while p.poll() is None:
+            if stop_event is not None and stop_event.is_set():
+                p.terminate()
+                try: p.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    p.kill(); p.wait(timeout=0.5)
+                return
+            time.sleep(0.02)
         if p.returncode != 0:
             raise RuntimeError(f"Piper exited with status {p.returncode}")
     except Exception as e:
-        print("[TTS legacy]",e); jaw_chatter_fallback(text); return
+        print("[TTS legacy]",e)
+        if stop_event is None or not stop_event.is_set():
+            jaw_chatter_fallback(text,stop_event)
+        return
+    if stop_event is not None and stop_event.is_set(): return
     _amplify_wav_inplace(TTS_WAV,_speech_volume())
     env=jaw_env_from_wav(TTS_WAV)
-    t=threading.Thread(target=speak_wav_play,args=(TTS_WAV,),daemon=True); t.start()
-    (jaw_chatter_fallback(text) if float(np.max(env) if env.size else 0.0)<0.05 else jaw_drive_by_env(env))
-    t.join()
+    try:
+        player=subprocess.Popen(
+            ["aplay","-q",TTS_WAV],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as e:
+        print("[aplay]",e); return
+    try:
+        if float(np.max(env) if env.size else 0.0)<0.05:
+            jaw_chatter_fallback(text,stop_event)
+        else:
+            jaw_drive_by_env(env,stop_event=stop_event)
+        while player.poll() is None:
+            if stop_event is not None and stop_event.is_set():
+                player.terminate()
+                break
+            time.sleep(0.02)
+        try: player.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            player.kill(); player.wait(timeout=0.5)
+    finally:
+        _jaw_set(JAW_REST_FRAC)
 
 def speak_phrases_with_jaw(
     phrases,
@@ -812,6 +961,11 @@ def speak_phrases_with_jaw(
     speaking=False
     seen=[]
     barge_result=None
+    runtime_stop=AnyStopEvent(
+        controller.stop_event if controller is not None else None,
+        controller.maintenance_interrupt_event if controller is not None else None,
+        stop_event,
+    )
 
     def report_first_audio(seconds):
         mqtt_pub("tts/first_audio",f"{seconds:.3f}")
@@ -840,8 +994,7 @@ def speak_phrases_with_jaw(
                 streaming_aborted=False
                 try:
                     stop_signal=AnyStopEvent(
-                        controller.stop_event if controller is not None else None,
-                        stop_event,
+                        runtime_stop,
                         monitor.interrupt_event if monitor is not None else None,
                     )
                     metrics=_speech_engine.speak_phrases(
@@ -882,15 +1035,15 @@ def speak_phrases_with_jaw(
                     return barge_result
                 mqtt_pub("tts/cache_hit","OFF")
                 for phrase in seen:
-                    if stop_event is not None and stop_event.is_set(): break
-                    _legacy_speak_with_jaw(phrase)
+                    if runtime_stop.is_set(): break
+                    _legacy_speak_with_jaw(phrase,runtime_stop)
             if _speech_engine is None and not allow_legacy_fallback:
                 if abort is not None: abort()
                 return barge_result
             mqtt_pub("tts/cache_hit","OFF")
             for phrase in marked:
-                if stop_event is not None and stop_event.is_set(): break
-                _legacy_speak_with_jaw(phrase)
+                if runtime_stop.is_set(): break
+                _legacy_speak_with_jaw(phrase,runtime_stop)
         finally:
             _jaw_set(JAW_REST_FRAC)
             if speaking:
@@ -931,7 +1084,11 @@ def stream_llm_reply(user_text:str,memory=None):
         return fallback,speak_with_jaw(fallback)
 
     history=memory.messages() if memory is not None else None
-    reply=_llm_client.start_reply(user_text,controller.stop_event,history=history)
+    foreground_stop=AnyStopEvent(
+        controller.stop_event,
+        controller.maintenance_interrupt_event,
+    )
+    reply=_llm_client.start_reply(user_text,foreground_stop,history=history)
     delivered=[]
 
     def phrases():
@@ -966,7 +1123,7 @@ def stream_llm_reply(user_text:str,memory=None):
     elif result is not None and not result.metrics.interrupted:
         _health_set("ollama",ComponentState.READY,f"{OLLAMA_MODEL} responding")
 
-    if controller.stop_event.is_set():
+    if foreground_stop.is_set():
         reply.cancel()
         return (result.text if result is not None else ""),barge_result
 
@@ -1073,7 +1230,11 @@ def _confirm_motion():
     global _motion_timer
     with _motion_timer_lock:
         _motion_timer=None
-    if motion_enabled and getattr(pir,"motion_detected",False):
+    if (
+        motion_enabled
+        and not _maintenance_stop_requested()
+        and getattr(pir,"motion_detected",False)
+    ):
         _enqueue(EventKind.TRIGGER,source="pir")
 
 def _schedule_motion_trigger():
@@ -1094,13 +1255,14 @@ if gpiozero is not None:
         pir=gpiozero.MotionSensor(PIR_PIN,queue_len=5,sample_rate=25,threshold=0.5)
         def _pir_on():
             global motion_count; motion_count+=1
-            if controller is not None:
+            locked=_maintenance_stop_requested()
+            if controller is not None and not locked:
                 controller.interrupt_idle()
                 controller.interrupt_scene()
                 controller.interrupt_self_test()
                 controller.interrupt_content_reload()
             mqtt_pub("motion","ON"); mqtt_pub("motion/count",str(motion_count))
-            _schedule_motion_trigger()
+            if not locked: _schedule_motion_trigger()
         def _pir_off():
             mqtt_pub("motion","OFF"); _cancel_motion_timer()
         pir.when_motion=_pir_on; pir.when_no_motion=_pir_off; print("PIR ready")
@@ -1143,6 +1305,14 @@ def _publish_operator_controls():
     mqtt_pub("idle_life/enabled","ON" if IDLE_LIFE_ENABLED else "OFF",retain=True)
     mqtt_pub("night_mode","ON" if night_mode else "OFF",retain=True)
 
+def _publish_maintenance_state():
+    mqtt_pub("maintenance/enabled","ON" if maintenance_mode else "OFF",retain=True)
+    mqtt_pub("maintenance/state",_maintenance_state,retain=True)
+    mqtt_pub("maintenance/last_result",_maintenance_last_result,retain=True)
+    mqtt_pub("maintenance/last_error",_maintenance_last_error,retain=True)
+    mqtt_pub("maintenance/since",_maintenance_since,retain=True)
+    mqtt_pub("maintenance/rejected_count",str(_maintenance_rejected_count),retain=True)
+
 def _publish_settings_state():
     mqtt_pub("settings/state",_settings_state,retain=True)
     mqtt_pub("settings/last_saved",_settings_last_saved,retain=True)
@@ -1172,15 +1342,18 @@ def _current_operator_settings():
         eyes_full=clamp(float(EYES_SPEAK_FRAC),0.0,1.0),
         volume=clamp(float(VOLUME),0.0,2.0),
         day_profile=_day_profile(),
+        maintenance_mode=bool(maintenance_mode),
     )
 
 def _apply_restored_settings(settings):
     global PERSONALITY_REQUESTED,motion_enabled,IDLE_LIFE_ENABLED,night_mode
+    global maintenance_mode
     global EYES_LISTEN_FRAC,EYES_SPEAK_FRAC,VOLUME,_day
     PERSONALITY_REQUESTED=settings.personality
     motion_enabled=settings.motion_enabled
     IDLE_LIFE_ENABLED=settings.idle_life_enabled
     night_mode=settings.night_mode
+    maintenance_mode=settings.maintenance_mode
     EYES_LISTEN_FRAC=settings.eyes_dim
     EYES_SPEAK_FRAC=settings.eyes_full
     VOLUME=settings.volume
@@ -1285,6 +1458,100 @@ def _toggle_night_mode(payload):
     _publish_operator_controls()
     _persist_operator_settings()
 
+def _init_maintenance_mode():
+    global _maintenance_state,_maintenance_last_result,_maintenance_last_error
+    global _maintenance_since
+    if controller is not None:
+        controller.set_maintenance_active(maintenance_mode)
+    if maintenance_mode:
+        _cancel_motion_timer()
+        _stop_eyes_effect()
+        _jaw_set(JAW_REST_FRAC)
+        eyes_off()
+        _maintenance_state="locked"
+        _maintenance_last_result="restored" if _settings_loaded is not None else "configured"
+        _health_set("maintenance",ComponentState.DISABLED,"operator lockout active")
+    else:
+        _maintenance_state="ready"
+        _maintenance_last_result="ready"
+        _health_set("maintenance",ComponentState.READY,"outputs unlocked")
+    _maintenance_last_error="none"
+    _maintenance_since=datetime.now(timezone.utc).isoformat(timespec="seconds")
+    _publish_maintenance_state()
+
+def _maintenance_value(payload):
+    if isinstance(payload,bool): return payload
+    value=str(payload).strip().lower()
+    if value in ("on","true","1","yes"): return True
+    if value in ("off","false","0","no"): return False
+    return None
+
+def _request_maintenance_mode(payload):
+    global _maintenance_state,_maintenance_last_result,_maintenance_last_error
+    want=_maintenance_value(payload)
+    if want is None:
+        _record_maintenance_result(
+            "error",
+            "maintenance value must be ON or OFF",
+        )
+        return False
+    if controller is None:
+        _record_maintenance_result("not_ready","controller is not ready")
+        return False
+    if not controller.request_maintenance(want,"mqtt"):
+        _record_maintenance_result("error","controller rejected maintenance request")
+        return False
+    _maintenance_state="locking" if want else "unlocking"
+    _maintenance_last_result="queued"
+    _maintenance_last_error="none"
+    _publish_maintenance_state()
+    return True
+
+def _set_maintenance_mode(payload):
+    global maintenance_mode,_maintenance_state,_maintenance_last_result
+    global _maintenance_last_error,_maintenance_since
+    want=_maintenance_value(payload)
+    if want is None:
+        _record_maintenance_result("error","maintenance value must be ON or OFF")
+        return
+    changed=want != maintenance_mode
+    maintenance_mode=want
+    if controller is not None:
+        controller.set_maintenance_active(want)
+    _cancel_motion_timer()
+    _stop_eyes_effect()
+    _jaw_set(JAW_REST_FRAC)
+    if want:
+        eyes_off()
+        _maintenance_state="locked"
+        _maintenance_last_result="locked" if changed else "unchanged"
+        _health_set("maintenance",ComponentState.DISABLED,"operator lockout active")
+    else:
+        eyes_idle()
+        _maintenance_state="ready"
+        _maintenance_last_result="unlocked" if changed else "unchanged"
+        _health_set("maintenance",ComponentState.READY,"outputs unlocked")
+    _maintenance_last_error="none"
+    _maintenance_since=datetime.now(timezone.utc).isoformat(timespec="seconds")
+    _publish_operator_controls()
+    _publish_maintenance_state()
+    _publish_idle_life_ready_state()
+    _publish_scene_ready_state()
+    _publish_self_test_state()
+    _publish_barge_in_capability()
+    if changed:
+        saved=_persist_operator_settings()
+        if not saved:
+            _maintenance_last_result=(
+                "locked_unsaved" if want else "unlocked_unsaved"
+            )
+            _maintenance_last_error=(
+                _settings_last_error
+                if _settings_store is not None
+                else "settings persistence disabled; restart uses configured default"
+            )
+            _publish_maintenance_state()
+
 _transcript=None
 def _transcript_start():
     global _transcript; _transcript={"startts":time.time(),"utterances":[]}
@@ -1374,6 +1641,13 @@ def _init_health_monitor():
         "content_reload",
         ComponentState.STARTING if CONTENT_RELOAD_ENABLED else ComponentState.DISABLED,
         "live content reload pending" if CONTENT_RELOAD_ENABLED else "disabled by configuration",
+        False,
+        publish=False,
+    )
+    _health.set_component(
+        "maintenance",
+        ComponentState.STARTING,
+        "operator lockout state pending",
         False,
         publish=False,
     )
@@ -1768,6 +2042,7 @@ def _init_speech_engine():
 
 def _scene_ready_state():
     if _scene_active: return "running"
+    if _maintenance_stop_requested(): return "locked"
     if not SCENES_ENABLED: return "disabled"
     if _scene_load_error: return "error"
     if _scene_library is None or _scene_runner is None: return "starting"
@@ -1926,7 +2201,11 @@ def _request_content_reload():
     if (
         _content_reload_active
         or _content_reload_pending
-        or controller.state not in (RuntimeState.IDLE,RuntimeState.COOLDOWN)
+        or controller.state not in (
+            RuntimeState.IDLE,
+            RuntimeState.COOLDOWN,
+            RuntimeState.MAINTENANCE,
+        )
     ):
         _content_reload_last_result="busy"
         _content_reload_last_error=f"controller is {controller.state.value}"
@@ -2267,6 +2546,7 @@ def _run_scene(name):
 def _self_test_ready_state():
     if _self_test_active: return "running"
     if _self_test_pending: return "queued"
+    if _maintenance_stop_requested(): return "locked"
     if not SELF_TEST_ENABLED: return "disabled"
     if _self_test_runner is None: return "starting"
     return "ready"
@@ -2472,6 +2752,7 @@ def _run_self_test():
 def _idle_life_ready_state():
     if _idle_life is None: return "starting"
     if not _idle_life.enabled: return "disabled"
+    if _maintenance_stop_requested(): return "locked"
     if not motion_enabled: return "disarmed"
     return "ready"
 
@@ -2541,7 +2822,9 @@ def _idle_tick(interrupt_event):
     global _idle_life_count,_idle_life_interrupted
     if _idle_life is None: return
     environment_clear=not bool(getattr(pir,"motion_detected",False))
-    decision=_idle_life.poll(armed=motion_enabled and environment_clear)
+    decision=_idle_life.poll(
+        armed=motion_enabled and environment_clear and not _maintenance_stop_requested()
+    )
     if decision is None or interrupt_event.is_set(): return
 
     _idle_life_count+=1
@@ -2571,7 +2854,9 @@ def _runtime_state_changed(state):
     mqtt_pub("status",state.value,retain=True)
     if state is RuntimeState.ERROR:
         _health_set("runtime",ComponentState.FAILED,"controller error",True)
-    if state in (RuntimeState.GREETING,RuntimeState.SPEAKING):
+    if _maintenance_stop_requested() or state is RuntimeState.MAINTENANCE:
+        eyes_off()
+    elif state in (RuntimeState.GREETING,RuntimeState.SPEAKING):
         eyes_speak()
     elif state in (RuntimeState.LISTENING,RuntimeState.THINKING):
         eyes_listen()
@@ -2586,6 +2871,7 @@ def _runtime_state_changed(state):
         eyes_idle()
 
 def _say_goodbye():
+    if _maintenance_stop_requested(): return None
     gb=random.choice(GOODBYE_LINES) if GOODBYE_LINES else "Goodbye."
     _transcript_add("assistant",gb)
     controller.set_state(RuntimeState.SPEAKING)
@@ -2595,15 +2881,19 @@ def _barge_in_ends_visit(result):
     return bool(result is not None and result.action is BargeInAction.END_VISIT)
 
 def _conversation_loop(memory):
-    while not controller.stop_event.is_set():
+    foreground_stop=AnyStopEvent(
+        controller.stop_event,
+        controller.maintenance_interrupt_event,
+    )
+    while not foreground_stop.is_set():
         controller.set_state(RuntimeState.LISTENING)
         text=record_once(
             in_idx or 0,
             44100,
             SPEECH_START_TIMEOUT,
-            controller.stop_event,
+            foreground_stop,
         )
-        if controller.stop_event.is_set(): return
+        if foreground_stop.is_set(): return
         if not text:
             _say_goodbye(); return
         _transcript_add("user",text)
@@ -2611,7 +2901,7 @@ def _conversation_loop(memory):
             _say_goodbye(); return
         controller.set_state(RuntimeState.THINKING)
         reply,barge_result=stream_llm_reply(text,memory)
-        if controller.stop_event.is_set(): return
+        if foreground_stop.is_set(): return
         if reply: _transcript_add("assistant",reply)
         if _barge_in_ends_visit(barge_result): return
 
@@ -2639,18 +2929,25 @@ def _manual_trigger():
             opener,
             first_audio=greeting_first_audio,
         )
-        if not _barge_in_ends_visit(barge_result):
+        if (
+            not _maintenance_stop_requested()
+            and not _barge_in_ends_visit(barge_result)
+        ):
             _conversation_loop(memory)
     finally:
         if memory is not None: memory.clear()
         _publish_memory_turns(None)
         _last_talk=time.monotonic()
         _transcript_publish_and_clear()
-        if not controller.stop_event.is_set():
+        if not controller.stop_event.is_set() and not _maintenance_stop_requested():
             controller.set_state(RuntimeState.COOLDOWN)
 
 def _handle_event(event):
-    if event.kind is EventKind.TRIGGER:
+    if maintenance_mode and event.kind in _MAINTENANCE_BLOCKED_EVENTS:
+        _maintenance_reject(event.kind.value)
+    elif event.kind is EventKind.SET_MAINTENANCE_MODE:
+        _set_maintenance_mode(event.payload)
+    elif event.kind is EventKind.TRIGGER:
         _manual_trigger()
     elif event.kind is EventKind.SET_PERSONALITY:
         _switch_personality(event.payload)
@@ -2694,7 +2991,9 @@ def _handle_event(event):
 
     _snooze_idle_life()
     if not controller.stop_event.is_set():
-        controller.set_state(RuntimeState.IDLE)
+        controller.set_state(
+            RuntimeState.MAINTENANCE if maintenance_mode else RuntimeState.IDLE
+        )
 
 def _signal_handler(sig,frame):
     print(f"[signal] {signal.Signals(sig).name}; stopping")
@@ -2732,6 +3031,8 @@ def _cleanup():
     except Exception: pass
     try: mqtt_pub("self_test/state","stopping",retain=True)
     except Exception: pass
+    try: mqtt_pub("maintenance/state","stopping",retain=True)
+    except Exception: pass
     try: mqtt_pub("personality/state","stopping",retain=True)
     except Exception: pass
     try: mqtt_pub("content_reload/active","OFF",retain=True)
@@ -2760,16 +3061,21 @@ def main():
     global controller,_runtime_ready
     _init_health_monitor()
     _init_systemd_watchdog()
+    _init_persistent_settings()
     controller=SkeletonController(
         _handle_event,
         _runtime_state_changed,
         idle_handler=_idle_tick,
         heartbeat=_controller_heartbeat,
+        initial_state=(
+            RuntimeState.MAINTENANCE if maintenance_mode else RuntimeState.IDLE
+        ),
     )
+    controller.set_maintenance_active(maintenance_mode)
     controller.heartbeat()
     signal.signal(signal.SIGINT,_signal_handler)
     signal.signal(signal.SIGTERM,_signal_handler)
-    _init_persistent_settings()
+    _init_maintenance_mode()
     _init_personality_library()
     _do_mqtt_connect()
     _init_scene_engine()

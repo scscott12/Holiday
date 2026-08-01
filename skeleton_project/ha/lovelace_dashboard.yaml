@@ -5,6 +5,7 @@ views:
       - type: entities
         title: Skeleton Main
         entities:
+          - switch.skeleton_maintenance_mode
           - switch.skeleton_motion_enabled
           - switch.skeleton_idle_life_enabled
           - switch.skeleton_night_mode
@@ -64,6 +65,11 @@ views:
           - sensor.skeleton_settings_last_saved
           - sensor.skeleton_settings_last_error
           - sensor.skeleton_settings_save_count
+          - sensor.skeleton_maintenance_state
+          - sensor.skeleton_maintenance_last_result
+          - sensor.skeleton_maintenance_last_error
+          - sensor.skeleton_maintenance_state_since
+          - sensor.skeleton_maintenance_blocked_commands
           - binary_sensor.skeleton_self_test_active
           - sensor.skeleton_self_test_state
           - sensor.skeleton_self_test_step

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 
-SETTINGS_VERSION = 1
+SETTINGS_VERSION = 2
 MAX_SETTINGS_BYTES = 16 * 1024
 _SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -39,6 +39,7 @@ class OperatorSettings:
     eyes_full: float
     volume: float
     day_profile: DayProfile
+    maintenance_mode: bool = False
     updated_at: str = "never"
 
     def to_payload(self) -> dict[str, Any]:
@@ -50,6 +51,7 @@ class OperatorSettings:
                 "motion_enabled": self.motion_enabled,
                 "idle_life_enabled": self.idle_life_enabled,
                 "night_mode": self.night_mode,
+                "maintenance_mode": self.maintenance_mode,
                 "eyes_dim": self.eyes_dim,
                 "eyes_full": self.eyes_full,
                 "volume": self.volume,
@@ -101,9 +103,10 @@ def _number(value: Any, label: str, minimum: float, maximum: float) -> float:
 def settings_from_payload(payload: Any) -> OperatorSettings:
     root = _mapping(payload, "saved settings")
     _require_exact_fields(root, {"version", "updated_at", "settings"}, "saved settings")
-    if root["version"] != SETTINGS_VERSION:
+    version = root["version"]
+    if isinstance(version, bool) or version not in (1, SETTINGS_VERSION):
         raise SettingsConfigError(
-            f"unsupported settings version {root['version']!r}; expected {SETTINGS_VERSION}"
+            f"unsupported settings version {version!r}; expected 1 or {SETTINGS_VERSION}"
         )
     updated_at = root["updated_at"]
     if not isinstance(updated_at, str) or not updated_at or len(updated_at) > 64:
@@ -120,6 +123,8 @@ def settings_from_payload(payload: Any) -> OperatorSettings:
         "volume",
         "day_profile",
     }
+    if version >= 2:
+        expected.add("maintenance_mode")
     _require_exact_fields(values, expected, "settings")
     personality = values["personality"]
     if not isinstance(personality, str) or not _SAFE_NAME.fullmatch(personality):
@@ -145,6 +150,11 @@ def settings_from_payload(payload: Any) -> OperatorSettings:
         eyes_full=_number(values["eyes_full"], "eyes_full", 0.0, 1.0),
         volume=_number(values["volume"], "volume", 0.0, 2.0),
         day_profile=day_profile,
+        maintenance_mode=(
+            _boolean(values["maintenance_mode"], "maintenance_mode")
+            if version >= 2
+            else False
+        ),
         updated_at=updated_at,
     )
 

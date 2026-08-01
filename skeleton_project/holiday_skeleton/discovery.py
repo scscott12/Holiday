@@ -253,6 +253,34 @@ def discovery_messages(
         "uniq_id": f"holiday_{device_name}_settings_save_count",
         "stat_t": f"{base}/settings/save_count",
     })
+    add("sensor", "maintenance_state", {
+        "name": f"{title} Maintenance State",
+        "uniq_id": f"holiday_{device_name}_maintenance_state",
+        "stat_t": f"{base}/maintenance/state",
+        "icon": "mdi:lock-alert",
+    })
+    add("sensor", "maintenance_last_result", {
+        "name": f"{title} Maintenance Last Result",
+        "uniq_id": f"holiday_{device_name}_maintenance_last_result",
+        "stat_t": f"{base}/maintenance/last_result",
+    })
+    add("sensor", "maintenance_last_error", {
+        "name": f"{title} Maintenance Last Error",
+        "uniq_id": f"holiday_{device_name}_maintenance_last_error",
+        "stat_t": f"{base}/maintenance/last_error",
+    })
+    add("sensor", "maintenance_since", {
+        "name": f"{title} Maintenance State Since",
+        "uniq_id": f"holiday_{device_name}_maintenance_since",
+        "stat_t": f"{base}/maintenance/since",
+        "device_class": "timestamp",
+    })
+    add("sensor", "maintenance_rejected_count", {
+        "name": f"{title} Maintenance Blocked Commands",
+        "uniq_id": f"holiday_{device_name}_maintenance_rejected_count",
+        "stat_t": f"{base}/maintenance/rejected_count",
+        "state_class": "total_increasing",
+    })
     add("binary_sensor", "self_test_active", {
         "name": f"{title} Self-Test Active",
         "uniq_id": f"holiday_{device_name}_self_test_active",
@@ -555,6 +583,14 @@ def discovery_messages(
         "name": f"{title} Night Mode", "uniq_id": f"holiday_{device_name}_night_mode",
         "cmd_t": f"{base}/night_mode/set", "stat_t": f"{base}/night_mode",
         "pl_on": "ON", "pl_off": "OFF",
+    })
+    add("switch", "maintenance_mode", {
+        "name": f"{title} Maintenance Mode",
+        "uniq_id": f"holiday_{device_name}_maintenance_mode",
+        "cmd_t": f"{base}/maintenance/set",
+        "stat_t": f"{base}/maintenance/enabled",
+        "pl_on": "ON", "pl_off": "OFF",
+        "icon": "mdi:lock-alert",
     })
     add("select", "personality", {
         "name": f"{title} Personality",
