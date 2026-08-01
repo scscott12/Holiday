@@ -59,6 +59,7 @@ PIPER_CONFIG = envs("PIPER_CONFIG","").strip() or None
 TTS_WAV      = envs("TTS_WAV", "/tmp/tts.wav")
 TTS_FRAME_MS = float(envs("TTS_FRAME_MS","20"))
 AUDIO_OUTPUT_DEVICE = envs("AUDIO_OUTPUT_DEVICE","").strip() or None
+TTS_CANNED_CACHE = envs("TTS_CANNED_CACHE","1").strip().lower() in ("1","true","yes","on")
 
 PCA_FREQ     = int(envs("PCA_FREQ","50"))
 JAW_CH       = int(envs("JAW_CH","0"))
@@ -155,6 +156,21 @@ def _try_load_prompts():
     except Exception as e: print("[prompts] Failed:",e)
 _try_load_prompts()
 
+def _canned_speech_lines():
+    """Return each configured opening/goodbye line once, in stable order."""
+    return list(dict.fromkeys(
+        str(line).strip()
+        for group in (
+            MORNING_LINES,
+            AFTERNOON_LINES,
+            EVENING_LINES,
+            NIGHT_LINES,
+            GOODBYE_LINES,
+        )
+        for line in group
+        if str(line).strip()
+    ))
+
 EXIT_RE=re.compile(r"\b(good\s?bye|bye|farewell|that'?s all|we('re| are) done|stop now|quit|exit|shut\s?down)\b",re.I)
 
 def _make_mqtt_client():
@@ -167,6 +183,7 @@ def _make_mqtt_client():
 
 mqttc=_make_mqtt_client()
 _mqtt_connected=False
+_runtime_ready=False
 controller=None
 
 def mqtt_pub(topic,payload,retain=False):
@@ -219,7 +236,7 @@ def _on_connect(client,userdata,flags,rc,properties=None):
         for path in subs:
             try: client.subscribe(f"{MQTT_BASE}/{path}")
             except Exception as e: print("[mqtt subscribe]",e)
-        mqtt_pub("ready","ON")
+        mqtt_pub("ready","ON" if _runtime_ready else "OFF")
 
 def _on_disconnect(client,userdata,rc,properties=None):
     global _mqtt_connected; _mqtt_connected=False
@@ -385,14 +402,17 @@ def speak_phrases_with_jaw(phrases,first_audio=None,abort=None):
                     )
                     mqtt_pub("tts/speak_time",f"{metrics.total_seconds:.3f}")
                     mqtt_pub("tts/audio_time",f"{metrics.audio_seconds:.3f}")
+                    mqtt_pub("tts/cache_hit","ON" if metrics.cached_phrases else "OFF")
                     return metrics
                 except SpeechEngineError as e:
                     print("[TTS streaming]",e)
                     if e.audio_started or (controller is not None and controller.stop_event.is_set()):
                         if abort is not None: abort()
                         return
+                    mqtt_pub("tts/cache_hit","OFF")
                     for phrase in seen:
                         _legacy_speak_with_jaw(phrase)
+            mqtt_pub("tts/cache_hit","OFF")
             for phrase in marked:
                 _legacy_speak_with_jaw(phrase)
         finally:
@@ -400,9 +420,9 @@ def speak_phrases_with_jaw(phrases,first_audio=None,abort=None):
             if speaking:
                 mqtt_pub("speaking","OFF")
 
-def speak_with_jaw(text:str):
+def speak_with_jaw(text:str,first_audio=None):
     if not text: return None
-    return speak_phrases_with_jaw([text])
+    return speak_phrases_with_jaw([text],first_audio=first_audio)
 
 def _publish_llm_metrics(result):
     if result is None: return
@@ -670,7 +690,6 @@ def _transcript_publish_and_clear():
 def _do_mqtt_connect():
     if mqttc is not None:
         mqtt_connect()
-        mqtt_pub("ready","ON")
         mqtt_pub("llm/memory_turns","0")
 
 def _warm_ollama():
@@ -709,6 +728,8 @@ def _init_speech_engine():
     if sd is None:
         print("[TTS] sounddevice unavailable; using legacy Piper process")
         mqtt_pub("tts/engine","legacy",retain=True)
+        mqtt_pub("tts/cache_state","legacy",retain=True)
+        mqtt_pub("tts/cache_entries","0",retain=True)
         return
     started=time.monotonic()
     try:
@@ -729,13 +750,36 @@ def _init_speech_engine():
         mqtt_pub("tts/engine","streaming",retain=True)
         mqtt_pub("tts/model_load_time",f"{elapsed:.3f}",retain=True)
         mqtt_pub("tts/warmup_time",f"{warmup_seconds:.3f}",retain=True)
+        if TTS_CANNED_CACHE:
+            mqtt_pub("tts/cache_state","warming",retain=True)
+            cache_metrics=_speech_engine.cache_phrases(_canned_speech_lines())
+            cache_state="ready" if cache_metrics.failed_entries == 0 else "partial"
+            mqtt_pub("tts/cache_state",cache_state,retain=True)
+            mqtt_pub("tts/cache_entries",str(cache_metrics.total_entries),retain=True)
+            mqtt_pub("tts/cache_warmup_time",f"{cache_metrics.warmup_seconds:.3f}",retain=True)
+            mqtt_pub("tts/cache_memory_kb",f"{cache_metrics.pcm_bytes/1024.0:.1f}",retain=True)
+            print(
+                f"[TTS cache] {cache_metrics.total_entries}/"
+                f"{cache_metrics.requested_entries} canned lines ready in "
+                f"{cache_metrics.warmup_seconds:.3f}s "
+                f"({cache_metrics.pcm_bytes/1024.0:.1f} KiB)"
+            )
+            for error in cache_metrics.errors:
+                print(f"[TTS cache] skipped {error}")
+        else:
+            mqtt_pub("tts/cache_state","disabled",retain=True)
+            mqtt_pub("tts/cache_entries","0",retain=True)
+            mqtt_pub("tts/cache_warmup_time","0.000",retain=True)
+            mqtt_pub("tts/cache_memory_kb","0.0",retain=True)
         print(
             f"[TTS] Piper voice warm and output stream ready in "
-            f"{elapsed + warmup_seconds:.3f}s"
+            f"{time.monotonic() - started:.3f}s"
         )
     except Exception as e:
         _speech_engine=None
         mqtt_pub("tts/engine","legacy",retain=True)
+        mqtt_pub("tts/cache_state","legacy",retain=True)
+        mqtt_pub("tts/cache_entries","0",retain=True)
         print(f"[TTS] warm engine unavailable; using legacy Piper process: {e}")
 
 def _runtime_state_changed(state):
@@ -790,7 +834,14 @@ def _manual_trigger():
         _publish_memory_turns(memory)
         _transcript_add("assistant",opener)
         controller.set_state(RuntimeState.GREETING)
-        speak_with_jaw(opener)
+        greeting_started=time.monotonic()
+        speak_with_jaw(
+            opener,
+            first_audio=lambda _seconds: mqtt_pub(
+                "tts/greeting_first_audio",
+                f"{time.monotonic()-greeting_started:.3f}",
+            ),
+        )
         _conversation_loop(memory)
     finally:
         if memory is not None: memory.clear()
@@ -840,6 +891,8 @@ def _signal_handler(sig,frame):
         controller.request_stop("signal")
 
 def _cleanup():
+    global _runtime_ready
+    _runtime_ready=False
     _cancel_motion_timer()
     try: _transcript_publish_and_clear()
     except Exception: pass
@@ -864,7 +917,7 @@ def _cleanup():
     except Exception: pass
 
 def main():
-    global controller
+    global controller,_runtime_ready
     controller=SkeletonController(_handle_event,_runtime_state_changed)
     signal.signal(signal.SIGINT,_signal_handler)
     signal.signal(signal.SIGTERM,_signal_handler)
@@ -872,6 +925,8 @@ def main():
     _init_speech_engine()
     _init_llm_client()
     _warm_ollama()
+    _runtime_ready=True
+    mqtt_pub("ready","ON",retain=True)
     print("👀 Waiting for motion or MQTT commands…")
     try:
         controller.run_forever()

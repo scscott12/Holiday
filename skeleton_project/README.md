@@ -69,7 +69,11 @@ views:
           - sensor.skeleton_response_first_audio
           - sensor.skeleton_memory_turns
           - sensor.skeleton_tts_engine
+          - sensor.skeleton_tts_cache_state
+          - sensor.skeleton_tts_cached_lines
+          - binary_sensor.skeleton_tts_cache_hit
           - sensor.skeleton_tts_first_audio
+          - sensor.skeleton_greeting_first_audio
           - sensor.skeleton_transcript
 ```
 
@@ -102,6 +106,7 @@ Environment="END_SILENCE_SEC=0.75"
 Environment="MAX_UTTERANCE_SEC=12.0"
 Environment="AUDIO_OUTPUT_DEVICE="
 Environment="TTS_FRAME_MS=20"
+Environment="TTS_CANNED_CACHE=1"
 Environment="LLM_PHRASE_MIN_CHARS=12"
 Environment="LLM_PHRASE_SOFT_CHARS=36"
 Environment="LLM_PHRASE_MAX_CHARS=72"
@@ -123,12 +128,19 @@ The service loads `PIPER_MODEL` once during startup, runs one silent inference t
 
 The jaw follows 20 ms RMS audio frames as those same frames are written to the speaker. Change `TTS_FRAME_MS` only if the servo needs slower movement; 15–25 ms is the useful range. `AUDIO_OUTPUT_DEVICE` may be a sounddevice device index or a unique device-name substring. Leave it empty to use the system default.
 
+With `TTS_CANNED_CACHE=1` (the default), every configured morning, afternoon, evening, night, and goodbye line is synthesized silently during service startup. The raw PCM and jaw envelope stay in memory, so a motion greeting or goodbye can write its first frame immediately without invoking Piper again. Dynamic Home Assistant text and Ollama phrases still use live streaming synthesis. Cache keys normalize whitespace, and the cache belongs only to the currently loaded voice instance, so restarting after a model, voice configuration, frame-size, or prompt change cannot replay stale audio. Set `TTS_CANNED_CACHE=0` if startup time matters more than instant greetings.
+
 Home Assistant reports:
 
 - `sensor.skeleton_tts_engine`: `streaming` on the warm path or `legacy` when startup falls back to the existing Piper binary.
 - `sensor.skeleton_tts_model_load_time`: one-time voice load duration.
 - `sensor.skeleton_tts_warmup_time`: one-time silent inference that removes first-greeting cold start.
+- `sensor.skeleton_tts_cache_state`: `warming`, `ready`, `partial`, `disabled`, or `legacy`.
+- `sensor.skeleton_tts_cached_lines`: number of opening/goodbye lines held in memory.
+- `sensor.skeleton_tts_cache_warmup_time` and `sensor.skeleton_tts_cache_memory`: startup cost and RAM used by cached PCM.
+- `binary_sensor.skeleton_tts_cache_hit`: whether the latest streaming-engine utterance used cached audio.
 - `sensor.skeleton_tts_first_audio`: synthesis-to-first-PCM latency for the latest utterance.
+- `sensor.skeleton_greeting_first_audio`: greeting-call to first-PCM latency, including cache lookup and playback setup.
 - `sensor.skeleton_tts_speak_time`: total synthesis and playback time.
 - `sensor.skeleton_tts_audio_time`: generated PCM duration for comparison with wall time.
 
@@ -140,7 +152,7 @@ sudo systemctl restart holiday-skeleton
 sudo journalctl -u holiday-skeleton -f
 ```
 
-Startup should log `Piper voice warm and output stream ready`. If it logs `using legacy Piper process`, verify the `piper-tts` install, `PIPER_MODEL`, its adjacent `.onnx.json` file, and the configured output device.
+Startup should log both `Piper voice warm and output stream ready` and a `[TTS cache] ... canned lines ready` summary. If it logs `using legacy Piper process`, verify the `piper-tts` install, `PIPER_MODEL`, its adjacent `.onnx.json` file, and the configured output device.
 
 ## Low-latency replies
 

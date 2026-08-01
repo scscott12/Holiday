@@ -24,12 +24,15 @@ class FakeChunk:
 class FakeVoice:
     config = SimpleNamespace(sample_rate=1000)
 
-    def __init__(self, chunks):
+    def __init__(self, chunks, fail_on=()):
         self.chunks = chunks
+        self.fail_on = set(fail_on)
         self.calls = []
 
     def synthesize(self, text):
         self.calls.append(text)
+        if text in self.fail_on:
+            raise RuntimeError("synthetic cache failure")
         yield from self.chunks
 
 
@@ -92,15 +95,16 @@ class SpeechHelpersTests(unittest.TestCase):
 
 
 class PiperSpeechEngineTests(unittest.TestCase):
-    def make_engine(self, chunks):
+    def make_engine(self, chunks, volume=1.0):
         self.voice = FakeVoice(chunks)
         self.audio = FakeAudio()
         self.jaw = []
+        self.volume = [volume]
         engine = PiperSpeechEngine(
             voice=self.voice,
             audio_module=self.audio,
             jaw_set=self.jaw.append,
-            volume_getter=lambda: 1.0,
+            volume_getter=lambda: self.volume[0],
             rest_fraction=0.25,
             maximum_fraction=1.0,
             frame_ms=10,
@@ -144,6 +148,84 @@ class PiperSpeechEngineTests(unittest.TestCase):
         self.assertEqual(self.voice.calls, ["Ready"])
         self.assertEqual(self.audio.stream.writes, [])
 
+    def test_precache_renders_unique_lines_without_playing_them(self):
+        engine = self.make_engine([FakeChunk(np.full(20, 1000))])
+
+        metrics = engine.cache_phrases([
+            "Ahoy there.",
+            "  Ahoy   there. ",
+            "Goodbye.",
+            "",
+        ])
+
+        self.assertEqual(self.voice.calls, ["Ahoy there.", "Goodbye."])
+        self.assertEqual(self.audio.stream.writes, [])
+        self.assertEqual(metrics.requested_entries, 2)
+        self.assertEqual(metrics.new_entries, 2)
+        self.assertEqual(metrics.failed_entries, 0)
+        self.assertEqual(metrics.total_entries, 2)
+        self.assertEqual(metrics.audio_seconds, 0.04)
+        self.assertEqual(metrics.pcm_bytes, 80)
+
+    def test_cached_line_bypasses_piper_and_uses_current_volume(self):
+        engine = self.make_engine([FakeChunk(np.full(20, 1000))])
+        engine.cache_phrases(["Ahoy there."])
+        self.volume[0] = 0.5
+
+        metrics = engine.speak("  Ahoy   there. ")
+
+        self.assertEqual(self.voice.calls, ["Ahoy there."])
+        self.assertEqual(metrics.cached_phrases, 1)
+        self.assertEqual(metrics.phrases_spoken, 1)
+        played = np.frombuffer(b"".join(self.audio.stream.writes), dtype=np.int16)
+        np.testing.assert_array_equal(played, np.full(20, 500, dtype=np.int16))
+
+    def test_cache_miss_keeps_live_streaming_synthesis(self):
+        engine = self.make_engine([FakeChunk(np.full(20, 1000))])
+        engine.cache_phrases(["Opening line."])
+
+        metrics = engine.speak("Dynamic answer.")
+
+        self.assertEqual(self.voice.calls, ["Opening line.", "Dynamic answer."])
+        self.assertEqual(metrics.cached_phrases, 0)
+        self.assertEqual(metrics.frames_written, 2)
+
+    def test_second_cache_warmup_reuses_existing_entries(self):
+        engine = self.make_engine([FakeChunk(np.full(20, 1000))])
+        engine.cache_phrases(["Opening line."])
+
+        metrics = engine.cache_phrases(["Opening line."])
+
+        self.assertEqual(self.voice.calls, ["Opening line."])
+        self.assertEqual(metrics.new_entries, 0)
+        self.assertEqual(metrics.existing_entries, 1)
+        self.assertEqual(metrics.total_entries, 1)
+
+    def test_one_cache_failure_does_not_disable_other_lines_or_live_tts(self):
+        self.voice = FakeVoice(
+            [FakeChunk(np.full(20, 1000))],
+            fail_on={"Broken line."},
+        )
+        self.audio = FakeAudio()
+        self.jaw = []
+        engine = PiperSpeechEngine(
+            voice=self.voice,
+            audio_module=self.audio,
+            jaw_set=self.jaw.append,
+            volume_getter=lambda: 1.0,
+            rest_fraction=0.25,
+            maximum_fraction=1.0,
+            frame_ms=10,
+        )
+
+        cache = engine.cache_phrases(["Good line.", "Broken line."])
+        spoken = engine.speak("Good line.")
+
+        self.assertEqual(cache.new_entries, 1)
+        self.assertEqual(cache.failed_entries, 1)
+        self.assertIn("synthetic cache failure", cache.errors[0])
+        self.assertEqual(spoken.cached_phrases, 1)
+
     def test_stop_event_interrupts_between_small_pcm_frames(self):
         engine = self.make_engine([FakeChunk(np.full(30, 1000))])
         stop_event = threading.Event()
@@ -168,6 +250,7 @@ class PiperSpeechEngineTests(unittest.TestCase):
         engine.close()
 
         self.assertEqual(self.audio.stream.closed, 1)
+        self.assertEqual(engine.cache_entries, 0)
 
 
 if __name__ == "__main__":
