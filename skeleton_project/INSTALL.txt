@@ -76,6 +76,8 @@ pip install paho-mqtt
 - PERSONALITY=pirate chooses the first-run pack; Home Assistant can switch packs live while idle and the saved choice wins on later restarts.
 - A pack changes prompts, canned lines, reply bounds, voice volume, barge-in words, idle mutters, and its default scene together.
 - Pack switching is rejected while a visit, scene, speech, or idle behavior is active.
+- CONTENT_RELOAD_ENABLED=1 adds a transactional Reload Content button for personalities, scenes, and WAV cues.
+- Reload is accepted only while idle; invalid or interrupted preparation keeps the last known-good content active.
 - PERSIST_SETTINGS_ENABLED=1 restores operator controls after service/Pi restarts.
 - Only personality, switches, night mode, eye levels, and volume are saved; visitor speech and credentials are never written.
 - The packaged service owns /var/lib/holiday-skeleton and writes the state file atomically with 0600 permissions.
@@ -152,3 +154,9 @@ sudo journalctl -u holiday-skeleton -f
 # Run it again, then trigger the PIR or press Stop Self-Test. The result should be
 # interrupted, with the jaw at rest and eyes returned to idle. A run request made
 # during a visit or scene should report busy without interrupting that activity.
+# Make a harmless description change in scenes.json and press Reload Content.
+# Confirm content_reload/last_result becomes reloaded without service downtime.
+# Then introduce malformed JSON and reload again; confirm the result is error,
+# the prior scenes/personality remain available, and normal motion still works.
+# Start one more reload and trigger the PIR during canned-speech preparation;
+# confirm the result is interrupted and the visitor flow takes priority.

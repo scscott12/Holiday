@@ -212,6 +212,30 @@ class PiperSpeechEngineTests(unittest.TestCase):
         self.assertEqual(metrics.existing_entries, 1)
         self.assertEqual(metrics.total_entries, 1)
 
+    def test_cache_warmup_can_yield_between_phrases(self):
+        engine = self.make_engine([FakeChunk(np.full(20, 1000))])
+        stop_event = threading.Event()
+        progress = []
+        original_render = engine._render_for_cache
+
+        def render_then_stop(text):
+            rendered = original_render(text)
+            stop_event.set()
+            return rendered
+
+        engine._render_for_cache = render_then_stop
+        metrics = engine.cache_phrases(
+            ["First line.", "Second line."],
+            stop_event=stop_event,
+            progress=lambda: progress.append(True),
+        )
+
+        self.assertTrue(metrics.interrupted)
+        self.assertEqual(self.voice.calls, ["First line."])
+        self.assertEqual(metrics.new_entries, 1)
+        self.assertEqual(metrics.total_entries, 1)
+        self.assertGreaterEqual(len(progress), 2)
+
     def test_cache_can_be_pruned_after_personality_switch(self):
         engine = self.make_engine([FakeChunk(np.full(20, 1000))])
         engine.cache_phrases(["Old greeting.", "Shared scene.", "New greeting."])

@@ -187,6 +187,51 @@ def discovery_messages(
         "uniq_id": f"holiday_{device_name}_personality_switch_count",
         "stat_t": f"{base}/personality/switch_count",
     })
+    add("binary_sensor", "content_reload_active", {
+        "name": f"{title} Content Reload Active",
+        "uniq_id": f"holiday_{device_name}_content_reload_active",
+        "stat_t": f"{base}/content_reload/active",
+        "pl_on": "ON", "pl_off": "OFF",
+    })
+    add("sensor", "content_reload_state", {
+        "name": f"{title} Content Reload State",
+        "uniq_id": f"holiday_{device_name}_content_reload_state",
+        "stat_t": f"{base}/content_reload/state",
+        "icon": "mdi:file-refresh-outline",
+    })
+    add("sensor", "content_reload_last_result", {
+        "name": f"{title} Content Reload Last Result",
+        "uniq_id": f"holiday_{device_name}_content_reload_last_result",
+        "stat_t": f"{base}/content_reload/last_result",
+    })
+    add("sensor", "content_reload_last_error", {
+        "name": f"{title} Content Reload Last Error",
+        "uniq_id": f"holiday_{device_name}_content_reload_last_error",
+        "stat_t": f"{base}/content_reload/last_error",
+    })
+    add("sensor", "content_reload_last_run", {
+        "name": f"{title} Content Reload Last Run",
+        "uniq_id": f"holiday_{device_name}_content_reload_last_run",
+        "stat_t": f"{base}/content_reload/last_run",
+    })
+    add("sensor", "content_reload_last_duration", {
+        "name": f"{title} Content Reload Last Duration",
+        "uniq_id": f"holiday_{device_name}_content_reload_last_duration",
+        "stat_t": f"{base}/content_reload/last_duration",
+        "unit_of_measurement": "s",
+    })
+    add("sensor", "content_reload_count", {
+        "name": f"{title} Content Reload Count",
+        "uniq_id": f"holiday_{device_name}_content_reload_count",
+        "stat_t": f"{base}/content_reload/count",
+        "state_class": "total_increasing",
+    })
+    add("sensor", "content_reload_interrupted", {
+        "name": f"{title} Content Reloads Interrupted",
+        "uniq_id": f"holiday_{device_name}_content_reload_interrupted",
+        "stat_t": f"{base}/content_reload/interrupted",
+        "state_class": "total_increasing",
+    })
     add("sensor", "settings_state", {
         "name": f"{title} Saved Settings State",
         "uniq_id": f"holiday_{device_name}_settings_state",
@@ -549,6 +594,12 @@ def discovery_messages(
         "name": f"{title} Stop Self-Test",
         "uniq_id": f"holiday_{device_name}_self_test_stop",
         "cmd_t": f"{base}/self_test/stop/set",
+    })
+    add("button", "content_reload", {
+        "name": f"{title} Reload Content",
+        "uniq_id": f"holiday_{device_name}_content_reload",
+        "cmd_t": f"{base}/content/reload/set",
+        "icon": "mdi:file-refresh-outline",
     })
     add("button", "blink", {
         "name": f"{title} Blink", "uniq_id": f"holiday_{device_name}_blink_btn",

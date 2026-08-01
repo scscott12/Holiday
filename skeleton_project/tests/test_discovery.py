@@ -153,6 +153,22 @@ class DiscoveryTests(unittest.TestCase):
             "holiday/skeleton/settings/last_error",
         )
 
+    def test_transactional_content_reload_is_discovered(self):
+        messages = dict(discovery_messages("skeleton"))
+
+        self.assertEqual(
+            messages["homeassistant/button/skeleton/content_reload/config"]["cmd_t"],
+            "holiday/skeleton/content/reload/set",
+        )
+        self.assertEqual(
+            messages["homeassistant/binary_sensor/skeleton/content_reload_active/config"]["stat_t"],
+            "holiday/skeleton/content_reload/active",
+        )
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/content_reload_last_duration/config"]["unit_of_measurement"],
+            "s",
+        )
+
     def test_controller_watchdog_state_is_discovered(self):
         messages = dict(discovery_messages("skeleton"))
 

@@ -29,6 +29,7 @@ class EventKind(str, Enum):
     PLAY_SCENE = "play_scene"
     STOP_SCENE = "stop_scene"
     RUN_SELF_TEST = "run_self_test"
+    RELOAD_CONTENT = "reload_content"
     RESTART = "restart"
     SHUTDOWN = "shutdown"
 
@@ -44,6 +45,7 @@ class RuntimeState(str, Enum):
     SCENE = "scene"
     IDLE_LIFE = "idle_life"
     SELF_TEST = "self_test"
+    CONTENT_RELOAD = "content_reload"
     COOLDOWN = "cooldown"
     STOPPING = "stopping"
     ERROR = "error"
@@ -76,6 +78,7 @@ class SkeletonController:
         self._idle_interrupt = threading.Event()
         self._scene_interrupt = threading.Event()
         self._self_test_interrupt = threading.Event()
+        self._content_reload_interrupt = threading.Event()
         self._pending_trigger = False
         self._pending_lock = threading.Lock()
         self._state = RuntimeState.STARTING
@@ -100,6 +103,10 @@ class SkeletonController:
     def self_test_interrupt_event(self) -> threading.Event:
         return self._self_test_interrupt
 
+    @property
+    def content_reload_interrupt_event(self) -> threading.Event:
+        return self._content_reload_interrupt
+
     def interrupt_idle(self) -> None:
         """Ask an in-progress idle behavior to yield without queuing work."""
 
@@ -114,6 +121,11 @@ class SkeletonController:
         """Ask an in-progress operator self-test to yield safely."""
 
         self._self_test_interrupt.set()
+
+    def interrupt_content_reload(self) -> None:
+        """Ask an in-progress content reload to keep the active libraries."""
+
+        self._content_reload_interrupt.set()
 
     def set_state(self, state: RuntimeState) -> None:
         changed = state != self._state
@@ -151,6 +163,7 @@ class SkeletonController:
         self.interrupt_idle()
         self.interrupt_scene()
         self.interrupt_self_test()
+        self.interrupt_content_reload()
 
         if kind is EventKind.TRIGGER:
             with self._pending_lock:
@@ -172,6 +185,7 @@ class SkeletonController:
         self.interrupt_idle()
         self.interrupt_scene()
         self.interrupt_self_test()
+        self.interrupt_content_reload()
         try:
             self._queue.put_nowait(Event(EventKind.SHUTDOWN, source=source))
         except queue.Full:
@@ -220,6 +234,15 @@ class SkeletonController:
                 self._self_test_interrupt.clear()
                 if not self._queue.empty():
                     self._self_test_interrupt.set()
+
+            if event.kind is EventKind.RELOAD_CONTENT:
+                # A reload request interrupts a prior reload. Clear the signal
+                # only when this request reaches the head of the queue, while
+                # preserving any later command as a reason to keep the old
+                # libraries active.
+                self._content_reload_interrupt.clear()
+                if not self._queue.empty():
+                    self._content_reload_interrupt.set()
 
             try:
                 self.heartbeat()
