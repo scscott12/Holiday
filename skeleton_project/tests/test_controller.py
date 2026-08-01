@@ -56,7 +56,35 @@ class SkeletonControllerTests(unittest.TestCase):
 
         self.assertFalse(worker.is_alive())
 
+    def test_foreground_event_interrupts_idle_handler_before_running(self):
+        idle_started = threading.Event()
+        idle_finished = threading.Event()
+        foreground_handled = threading.Event()
+        interrupted = []
+        controller = None
+
+        def idle_handler(interrupt_event):
+            idle_started.set()
+            interrupted.append(interrupt_event.wait(timeout=1.0))
+            idle_finished.set()
+
+        def handler(event):
+            foreground_handled.set()
+            controller.request_stop("test")
+
+        controller = SkeletonController(handler, idle_handler=idle_handler)
+        worker = threading.Thread(target=controller.run_forever)
+        worker.start()
+        self.assertTrue(idle_started.wait(timeout=1.0))
+
+        self.assertTrue(controller.enqueue(EventKind.SAY, "visitor", "test"))
+
+        self.assertTrue(idle_finished.wait(timeout=1.0))
+        self.assertTrue(foreground_handled.wait(timeout=1.0))
+        worker.join(timeout=1.0)
+        self.assertEqual(interrupted, [True])
+        self.assertFalse(worker.is_alive())
+
 
 if __name__ == "__main__":
     unittest.main()
-

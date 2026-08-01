@@ -16,6 +16,17 @@ Environment="PIR_PIN=17"
 Environment="EYES_CH=4"
 Environment="JAW_CH=0"
 
+# Sparse, low-priority actions while motion is armed and no visit is active.
+# Mutters require streaming Piper so they can yield within one audio frame.
+Environment="IDLE_LIFE_ENABLED=1"
+Environment="IDLE_LIFE_MIN_SEC=18.0"
+Environment="IDLE_LIFE_MAX_SEC=45.0"
+Environment="IDLE_MUTTER_CHANCE=0.12"
+Environment="IDLE_EYE_PULSE_FRAC=0.10"
+Environment="IDLE_EYE_PULSE_MS=180"
+Environment="IDLE_JAW_TWITCH_FRAC=0.14"
+Environment="IDLE_JAW_TWITCH_MS=160"
+
 Environment="SPEECH_START_TIMEOUT=10.0"
 Environment="END_SILENCE_SEC=0.75"
 Environment="MAX_UTTERANCE_SEC=12.0"

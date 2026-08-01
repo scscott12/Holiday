@@ -19,6 +19,7 @@ from holiday_skeleton.brain import (
 )
 from holiday_skeleton.controller import EventKind, RuntimeState, SkeletonController
 from holiday_skeleton.discovery import discovery_messages
+from holiday_skeleton.idle_life import IdleAction, IdleDecision, IdleLifeScheduler
 from holiday_skeleton.speech import PiperSpeechEngine, SpeechEngineError
 
 def _safe_im(name, sub=None):
@@ -91,6 +92,15 @@ PIR_PIN          = int(envs("PIR_PIN","17"))
 MOTION_HOLD_SEC  = float(envs("MOTION_HOLD_SEC","0.8"))
 MOTION_COOLDOWN_SEC = float(envs("MOTION_COOLDOWN_SEC","8.0"))
 
+IDLE_LIFE_ENABLED = envs("IDLE_LIFE_ENABLED","1").strip().lower() in ("1","true","yes","on")
+IDLE_LIFE_MIN_SEC = float(envs("IDLE_LIFE_MIN_SEC","18.0"))
+IDLE_LIFE_MAX_SEC = float(envs("IDLE_LIFE_MAX_SEC","45.0"))
+IDLE_MUTTER_CHANCE = float(envs("IDLE_MUTTER_CHANCE","0.12"))
+IDLE_EYE_PULSE_FRAC = float(envs("IDLE_EYE_PULSE_FRAC","0.10"))
+IDLE_EYE_PULSE_MS = float(envs("IDLE_EYE_PULSE_MS","180"))
+IDLE_JAW_TWITCH_FRAC = float(envs("IDLE_JAW_TWITCH_FRAC","0.14"))
+IDLE_JAW_TWITCH_MS = float(envs("IDLE_JAW_TWITCH_MS","160"))
+
 VOSK_RATE        = int(envs("VOSK_RATE","16000"))
 SD_BLOCKSIZE     = int(envs("SD_BLOCKSIZE","1024"))
 ENERGY_GATE      = float(envs("ENERGY_GATE","180"))
@@ -156,6 +166,13 @@ GOODBYE_LINES=[
 "Fr tho, storms don’t wait for sad boys. Catch you on calmer seas.",
 "Peace out, sailor — my attention span just walked the plank."
 ]
+IDLE_LINES=[
+"Did that shadow just move, or am I losing me marbles again?",
+"Still here. Still dead. Weirdly productive.",
+"The silence be loud tonight.",
+"I swear that parrot still owes me money.",
+"Just resting me bones. All of them."
+]
 
 def pick_opening_line()->str:
     hr=datetime.now().hour
@@ -165,7 +182,7 @@ def pick_opening_line()->str:
     return random.choice(NIGHT_LINES)
 
 def _try_load_prompts():
-    global SYSTEM_PROMPT,MORNING_LINES,AFTERNOON_LINES,EVENING_LINES,NIGHT_LINES,GOODBYE_LINES
+    global SYSTEM_PROMPT,MORNING_LINES,AFTERNOON_LINES,EVENING_LINES,NIGHT_LINES,GOODBYE_LINES,IDLE_LINES
     try:
         if os.path.isfile(PROMPTS_PATH):
             with open(PROMPTS_PATH,"r",encoding="utf-8") as f: data=json.load(f)
@@ -175,6 +192,7 @@ def _try_load_prompts():
             EVENING_LINES=data.get("EVENING_LINES",EVENING_LINES)
             NIGHT_LINES=data.get("NIGHT_LINES",NIGHT_LINES)
             GOODBYE_LINES=data.get("GOODBYE_LINES",GOODBYE_LINES)
+            IDLE_LINES=data.get("IDLE_LINES",IDLE_LINES)
             print(f"[prompts] Loaded from {PROMPTS_PATH}")
     except Exception as e: print("[prompts] Failed:",e)
 _try_load_prompts()
@@ -189,6 +207,7 @@ def _canned_speech_lines():
             EVENING_LINES,
             NIGHT_LINES,
             GOODBYE_LINES,
+            IDLE_LINES,
         )
         for line in group
         if str(line).strip()
@@ -245,6 +264,7 @@ def _on_message(client,userdata,msg):
         try: v=float(p); v=v/100.0 if v>2.0 else v; _enqueue(EventKind.SET_VOLUME,v)
         except: pass; return
     if t.endswith("/motion/enabled/set"): _enqueue(EventKind.SET_MOTION_ENABLED,p); return
+    if t.endswith("/idle_life/enabled/set"): _enqueue(EventKind.SET_IDLE_LIFE_ENABLED,p); return
     if t.endswith("/night_mode/set"): _enqueue(EventKind.SET_NIGHT_MODE,p); return
     if t.endswith("/restart/set"): _enqueue(EventKind.RESTART); return
 
@@ -255,11 +275,13 @@ def _on_connect(client,userdata,flags,rc,properties=None):
         mqtt_pub("availability","online",retain=True); mqtt_pub("status","starting",retain=True)
         publish_mqtt_discovery()
         subs=["say/set","eyes/dim/set","eyes/full/set","blink/set","flicker/set","volume/set",
-              "motion/trigger/set","motion/enabled/set","night_mode/set","restart/set"]
+              "motion/trigger/set","motion/enabled/set","idle_life/enabled/set",
+              "night_mode/set","restart/set"]
         for path in subs:
             try: client.subscribe(f"{MQTT_BASE}/{path}")
             except Exception as e: print("[mqtt subscribe]",e)
         mqtt_pub("ready","ON" if _runtime_ready else "OFF")
+        if _idle_life is not None: _publish_idle_life_ready_state()
 
 def _on_disconnect(client,userdata,rc,properties=None):
     global _mqtt_connected; _mqtt_connected=False
@@ -475,7 +497,13 @@ def _legacy_speak_with_jaw(text:str):
     (jaw_chatter_fallback(text) if float(np.max(env) if env.size else 0.0)<0.05 else jaw_drive_by_env(env))
     t.join()
 
-def speak_phrases_with_jaw(phrases,first_audio=None,abort=None):
+def speak_phrases_with_jaw(
+    phrases,
+    first_audio=None,
+    abort=None,
+    stop_event=None,
+    allow_legacy_fallback=True,
+):
     """Speak an iterable without releasing the output stream between phrases."""
     speaking=False
     seen=[]
@@ -508,6 +536,7 @@ def speak_phrases_with_jaw(phrases,first_audio=None,abort=None):
                 try:
                     stop_signal=AnyStopEvent(
                         controller.stop_event if controller is not None else None,
+                        stop_event,
                         monitor.interrupt_event if monitor is not None else None,
                     )
                     metrics=_speech_engine.speak_phrases(
@@ -539,20 +568,35 @@ def speak_phrases_with_jaw(phrases,first_audio=None,abort=None):
                 if barge_result is not None:
                     if abort is not None: abort()
                     return barge_result
+                if not allow_legacy_fallback:
+                    if abort is not None: abort()
+                    return barge_result
                 mqtt_pub("tts/cache_hit","OFF")
                 for phrase in seen:
+                    if stop_event is not None and stop_event.is_set(): break
                     _legacy_speak_with_jaw(phrase)
             mqtt_pub("tts/cache_hit","OFF")
             for phrase in marked:
+                if stop_event is not None and stop_event.is_set(): break
                 _legacy_speak_with_jaw(phrase)
         finally:
             _jaw_set(JAW_REST_FRAC)
             if speaking:
                 mqtt_pub("speaking","OFF")
 
-def speak_with_jaw(text:str,first_audio=None):
+def speak_with_jaw(
+    text:str,
+    first_audio=None,
+    stop_event=None,
+    allow_legacy_fallback=True,
+):
     if not text: return None
-    return speak_phrases_with_jaw([text],first_audio=first_audio)
+    return speak_phrases_with_jaw(
+        [text],
+        first_audio=first_audio,
+        stop_event=stop_event,
+        allow_legacy_fallback=allow_legacy_fallback,
+    )
 
 def _publish_llm_metrics(result):
     if result is None: return
@@ -687,6 +731,7 @@ def record_once(input_index:int,capture_rate:int,timeout_s:float,stop_event=None
     return _recognized_text(rec.FinalResult())
 
 motion_enabled=True; motion_count=0
+_idle_life=None; _idle_life_count=0; _idle_life_interrupted=0
 _motion_timer=None; _motion_timer_lock=threading.Lock()
 
 def _cancel_motion_timer():
@@ -721,6 +766,7 @@ if gpiozero is not None:
         pir=gpiozero.MotionSensor(PIR_PIN,queue_len=5,sample_rate=25,threshold=0.5)
         def _pir_on():
             global motion_count; motion_count+=1
+            if controller is not None: controller.interrupt_idle()
             mqtt_pub("motion","ON"); mqtt_pub("motion/count",str(motion_count))
             _schedule_motion_trigger()
         def _pir_off():
@@ -766,6 +812,12 @@ def _set_motion_enabled(payload):
     global motion_enabled; motion_enabled=str(payload).lower() in ("on","true","1","yes")
     if not motion_enabled: _cancel_motion_timer()
     mqtt_pub("motion/enabled","ON" if motion_enabled else "OFF")
+    _publish_idle_life_ready_state()
+def _set_idle_life_enabled(payload):
+    global IDLE_LIFE_ENABLED
+    IDLE_LIFE_ENABLED=str(payload).lower() in ("on","true","1","yes")
+    if _idle_life is not None: _idle_life.set_enabled(IDLE_LIFE_ENABLED)
+    _publish_idle_life_ready_state()
 def _toggle_night_mode(payload):
     global night_mode,EYES_LISTEN_FRAC,EYES_SPEAK_FRAC,VOLUME,_day
     want=str(payload).lower() in ("on","true","1","yes")
@@ -903,13 +955,111 @@ def _init_speech_engine():
         mqtt_pub("tts/cache_entries","0",retain=True)
         print(f"[TTS] warm engine unavailable; using legacy Piper process: {e}")
 
+def _idle_life_ready_state():
+    if _idle_life is None: return "starting"
+    if not _idle_life.enabled: return "disabled"
+    if not motion_enabled: return "disarmed"
+    return "ready"
+
+def _publish_idle_life_ready_state():
+    mqtt_pub(
+        "idle_life/enabled",
+        "ON" if (_idle_life is not None and _idle_life.enabled) else "OFF",
+        retain=True,
+    )
+    mqtt_pub("idle_life/state",_idle_life_ready_state(),retain=True)
+
+def _init_idle_life():
+    global _idle_life
+    _idle_life=IdleLifeScheduler(
+        minimum_interval=IDLE_LIFE_MIN_SEC,
+        maximum_interval=IDLE_LIFE_MAX_SEC,
+        mutter_chance=IDLE_MUTTER_CHANCE,
+        mutter_lines=IDLE_LINES,
+        enabled=IDLE_LIFE_ENABLED,
+    )
+    mqtt_pub("idle_life/active","OFF",retain=True)
+    mqtt_pub("idle_life/count",str(_idle_life_count),retain=True)
+    mqtt_pub("idle_life/interrupted",str(_idle_life_interrupted),retain=True)
+    _publish_idle_life_ready_state()
+
+def _idle_eye_target():
+    target=clamp(IDLE_EYE_PULSE_FRAC,0.0,1.0)
+    if night_mode:
+        target=min(target,clamp(EYES_LISTEN_FRAC,0.0,1.0))
+    return max(clamp(EYES_IDLE_FRAC,0.0,1.0),target)
+
+def _idle_eye_pulse(interrupt_event):
+    if interrupt_event.is_set(): return True
+    eyes_set(_idle_eye_target())
+    interrupted=interrupt_event.wait(max(0.01,IDLE_EYE_PULSE_MS/1000.0))
+    eyes_idle()
+    return interrupted
+
+def _idle_jaw_twitch(interrupt_event):
+    if interrupt_event.is_set(): return True
+    amount=clamp(IDLE_JAW_TWITCH_FRAC,0.0,1.0)
+    target=JAW_REST_FRAC+(JAW_MAX_FRAC-JAW_REST_FRAC)*amount
+    _jaw_set(target)
+    interrupted=interrupt_event.wait(max(0.01,IDLE_JAW_TWITCH_MS/1000.0))
+    _jaw_set(JAW_REST_FRAC)
+    return interrupted
+
+def _run_idle_decision(decision,interrupt_event):
+    # Legacy aplay cannot stop mid-file, so never let a mutter delay a visitor.
+    if decision.action is IdleAction.MUTTER and _speech_engine is None:
+        decision=IdleDecision(IdleAction.JAW_TWITCH)
+        mqtt_pub("idle_life/last_action","jaw_twitch_legacy_fallback")
+    if decision.action is IdleAction.EYE_PULSE:
+        return _idle_eye_pulse(interrupt_event)
+    if decision.action is IdleAction.JAW_TWITCH:
+        return _idle_jaw_twitch(interrupt_event)
+    eyes_set(_idle_eye_target())
+    result=speak_with_jaw(
+        decision.text,
+        stop_event=interrupt_event,
+        allow_legacy_fallback=False,
+    )
+    eyes_idle()
+    return bool(interrupt_event.is_set() or result is not None)
+
+def _idle_tick(interrupt_event):
+    global _idle_life_count,_idle_life_interrupted
+    if _idle_life is None: return
+    environment_clear=not bool(getattr(pir,"motion_detected",False))
+    decision=_idle_life.poll(armed=motion_enabled and environment_clear)
+    if decision is None or interrupt_event.is_set(): return
+
+    _idle_life_count+=1
+    mqtt_pub("idle_life/active","ON")
+    mqtt_pub("idle_life/state","running")
+    mqtt_pub("idle_life/last_action",decision.action.value)
+    mqtt_pub("idle_life/count",str(_idle_life_count))
+    controller.set_state(RuntimeState.IDLE_LIFE)
+    interrupted=False
+    try:
+        interrupted=_run_idle_decision(decision,interrupt_event)
+    finally:
+        _jaw_set(JAW_REST_FRAC)
+        eyes_idle()
+        mqtt_pub("idle_life/active","OFF")
+        if interrupted or interrupt_event.is_set():
+            _idle_life_interrupted+=1
+            mqtt_pub("idle_life/interrupted",str(_idle_life_interrupted))
+        if not controller.stop_event.is_set():
+            controller.set_state(RuntimeState.IDLE)
+            _publish_idle_life_ready_state()
+
+def _snooze_idle_life():
+    if _idle_life is not None: _idle_life.snooze()
+
 def _runtime_state_changed(state):
     mqtt_pub("status",state.value,retain=True)
     if state in (RuntimeState.GREETING,RuntimeState.SPEAKING):
         eyes_speak()
     elif state in (RuntimeState.LISTENING,RuntimeState.THINKING):
         eyes_listen()
-    elif state is RuntimeState.EFFECT:
+    elif state in (RuntimeState.EFFECT,RuntimeState.IDLE_LIFE):
         return
     else:
         eyes_idle()
@@ -1002,12 +1152,15 @@ def _handle_event(event):
         _set_volume(float(event.payload))
     elif event.kind is EventKind.SET_MOTION_ENABLED:
         _set_motion_enabled(event.payload)
+    elif event.kind is EventKind.SET_IDLE_LIFE_ENABLED:
+        _set_idle_life_enabled(event.payload)
     elif event.kind is EventKind.SET_NIGHT_MODE:
         _toggle_night_mode(event.payload)
     elif event.kind is EventKind.RESTART:
         mqtt_pub("availability","offline",retain=True)
         controller.request_stop("mqtt-restart")
 
+    _snooze_idle_life()
     if not controller.stop_event.is_set():
         controller.set_state(RuntimeState.IDLE)
 
@@ -1025,6 +1178,10 @@ def _cleanup():
     try: mqtt_pub("ready","OFF",retain=True)
     except Exception: pass
     try: mqtt_pub("barge_in/active","OFF",retain=True)
+    except Exception: pass
+    try: mqtt_pub("idle_life/active","OFF",retain=True)
+    except Exception: pass
+    try: mqtt_pub("idle_life/state","stopping",retain=True)
     except Exception: pass
     try: mqtt_pub("availability","offline",retain=True)
     except Exception: pass
@@ -1046,7 +1203,11 @@ def _cleanup():
 
 def main():
     global controller,_runtime_ready
-    controller=SkeletonController(_handle_event,_runtime_state_changed)
+    controller=SkeletonController(
+        _handle_event,
+        _runtime_state_changed,
+        idle_handler=_idle_tick,
+    )
     signal.signal(signal.SIGINT,_signal_handler)
     signal.signal(signal.SIGTERM,_signal_handler)
     _do_mqtt_connect()
@@ -1054,6 +1215,7 @@ def main():
     _init_llm_client()
     _warm_ollama()
     _publish_barge_in_capability()
+    _init_idle_life()
     _runtime_ready=True
     mqtt_pub("ready","ON",retain=True)
     print("👀 Waiting for motion or MQTT commands…")

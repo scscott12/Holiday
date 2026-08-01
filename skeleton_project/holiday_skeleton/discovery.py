@@ -73,6 +73,31 @@ def discovery_messages(device_name: str) -> List[DiscoveryMessage]:
         "uniq_id": f"holiday_{device_name}_barge_in_count",
         "stat_t": f"{base}/barge_in/count",
     })
+    add("binary_sensor", "idle_life_active", {
+        "name": f"{title} Idle Life Active",
+        "uniq_id": f"holiday_{device_name}_idle_life_active",
+        "stat_t": f"{base}/idle_life/active", "pl_on": "ON", "pl_off": "OFF",
+    })
+    add("sensor", "idle_life_state", {
+        "name": f"{title} Idle Life State",
+        "uniq_id": f"holiday_{device_name}_idle_life_state",
+        "stat_t": f"{base}/idle_life/state",
+    })
+    add("sensor", "idle_life_last_action", {
+        "name": f"{title} Idle Life Last Action",
+        "uniq_id": f"holiday_{device_name}_idle_life_last_action",
+        "stat_t": f"{base}/idle_life/last_action",
+    })
+    add("sensor", "idle_life_count", {
+        "name": f"{title} Idle Life Count",
+        "uniq_id": f"holiday_{device_name}_idle_life_count",
+        "stat_t": f"{base}/idle_life/count",
+    })
+    add("sensor", "idle_life_interrupted", {
+        "name": f"{title} Idle Life Interrupted",
+        "uniq_id": f"holiday_{device_name}_idle_life_interrupted",
+        "stat_t": f"{base}/idle_life/interrupted",
+    })
     add("binary_sensor", "ready", {
         "name": f"{title} Ready", "uniq_id": f"holiday_{device_name}_ready",
         "stat_t": f"{base}/ready", "pl_on": "ON", "pl_off": "OFF",
@@ -191,6 +216,13 @@ def discovery_messages(device_name: str) -> List[DiscoveryMessage]:
     add("switch", "motion_enabled", {
         "name": f"{title} Motion Enabled", "uniq_id": f"holiday_{device_name}_motion_enabled",
         "cmd_t": f"{base}/motion/enabled/set", "stat_t": f"{base}/motion/enabled",
+        "pl_on": "ON", "pl_off": "OFF",
+    })
+    add("switch", "idle_life_enabled", {
+        "name": f"{title} Idle Life Enabled",
+        "uniq_id": f"holiday_{device_name}_idle_life_enabled",
+        "cmd_t": f"{base}/idle_life/enabled/set",
+        "stat_t": f"{base}/idle_life/enabled",
         "pl_on": "ON", "pl_off": "OFF",
     })
     add("switch", "night_mode", {

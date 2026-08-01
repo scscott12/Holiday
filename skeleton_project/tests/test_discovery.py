@@ -79,6 +79,22 @@ class DiscoveryTests(unittest.TestCase):
             "holiday/skeleton/barge_in/latency",
         )
 
+    def test_idle_life_controls_and_metrics_are_discovered(self):
+        messages = dict(discovery_messages("skeleton"))
+
+        self.assertEqual(
+            messages["homeassistant/switch/skeleton/idle_life_enabled/config"]["cmd_t"],
+            "holiday/skeleton/idle_life/enabled/set",
+        )
+        self.assertEqual(
+            messages["homeassistant/binary_sensor/skeleton/idle_life_active/config"]["stat_t"],
+            "holiday/skeleton/idle_life/active",
+        )
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/idle_life_interrupted/config"]["stat_t"],
+            "holiday/skeleton/idle_life/interrupted",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

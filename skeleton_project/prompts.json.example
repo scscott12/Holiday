@@ -14,5 +14,8 @@
   ],
   "GOODBYE_LINES": [
     "Goodbye override example 1"
+  ],
+  "IDLE_LINES": [
+    "Idle mutter override example 1"
   ]
 }
