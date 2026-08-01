@@ -18,6 +18,11 @@ views:
         entities:
           - binary_sensor.skeleton_motion
           - binary_sensor.skeleton_speaking
+          - binary_sensor.skeleton_barge_in_enabled
+          - binary_sensor.skeleton_barge_in_listening
+          - sensor.skeleton_barge_in_state
+          - sensor.skeleton_last_barge_in_command
+          - sensor.skeleton_barge_in_latency
           - sensor.skeleton_status
           - sensor.skeleton_reply_time
           - sensor.skeleton_llm_first_token

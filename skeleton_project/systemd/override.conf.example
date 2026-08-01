@@ -20,6 +20,19 @@ Environment="SPEECH_START_TIMEOUT=10.0"
 Environment="END_SILENCE_SEC=0.75"
 Environment="MAX_UTTERANCE_SEC=12.0"
 
+# Command-only Vosk monitor active while Piper speaks. "stop"/"quiet" end the
+# visit; "wait" or the wake name interrupts and returns to visitor listening.
+Environment="BARGE_IN_ENABLED=1"
+Environment="BARGE_IN_STOP_COMMANDS=stop,quiet"
+Environment="BARGE_IN_LISTEN_COMMANDS=wait"
+Environment="BARGE_IN_WAKE_WORDS=skeleton"
+Environment="BARGE_IN_ENERGY_GATE=320"
+Environment="BARGE_IN_MIN_VOICED_SEC=0.10"
+Environment="BARGE_IN_PARTIAL_CONFIRMATIONS=2"
+Environment="BARGE_IN_CAPTURE_RATE=44100"
+# Set to 1 if speaker echo requires "skeleton stop" instead of bare "stop".
+Environment="BARGE_IN_REQUIRE_WAKE_WORD=0"
+
 # Optional: a sounddevice index or a unique substring from sd.query_devices().
 # Leave empty to use the system default output.
 Environment="AUDIO_OUTPUT_DEVICE="

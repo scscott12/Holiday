@@ -58,6 +58,11 @@ pip install paho-mqtt
 - Ollama uses /api/chat and remembers the latest LLM_MEMORY_TURNS exchanges for one visit.
 - LLM_MEMORY_TURNS=3 and LLM_CONTEXT_TOKENS=512 are the recommended Pi defaults.
 - Visit memory is cleared on goodbye/timeout and is never saved to disk.
+- BARGE_IN_ENABLED=1 listens for command-only interruptions during streaming speech.
+- "stop"/"quiet" end a visit; "wait" or BARGE_IN_WAKE_WORDS returns to listening.
+- Raise BARGE_IN_ENERGY_GATE if speaker echo causes false interruptions.
+- Set BARGE_IN_REQUIRE_WAKE_WORD=1 if bare commands are still too sensitive.
+- Barge-in requires streaming Piper; legacy WAV mode reports legacy_tts and remains uninterrupted.
 - EYES_INVERT=1 if your LED driver is active-low.
 - JAW_MIN_US/JAW_MAX_US to set jaw travel.
 - Eyes Dim/Full % and Volume % are "number" controls in HA with box entry.
@@ -86,3 +91,7 @@ sudo journalctl -u holiday-skeleton -f
 # llm/first_audio, and llm/reply_time. First audio should precede reply completion.
 # Ask a follow-up that depends on the prior answer, then end the visit. The
 # llm/memory_turns sensor should increment during the visit and return to 0.
+# During a long response, say "wait" and confirm speech stops, the jaw rests,
+# barge_in/last_action=listen, and the skeleton accepts the next visitor sentence.
+# Repeat with "stop" and confirm the visit ends without a goodbye. Verify a
+# normal reply containing a command word does not interrupt itself.
