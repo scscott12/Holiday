@@ -1,5 +1,7 @@
 # Holiday Skeleton (PCA9685 + MQTT + Home Assistant)
 
+[![Skeleton CI](https://github.com/scscott12/Holiday/actions/workflows/skeleton-ci.yml/badge.svg)](https://github.com/scscott12/Holiday/actions/workflows/skeleton-ci.yml)
+
 Single-process animatronic skeleton that **listens → thinks → speaks**, with **moving jaw**, **PWM eyes**, hot-swappable personality packs, and configurable multi-step scenes via PCA9685, offline **Vosk** STT, **Piper** TTS, and optional **Ollama** LLM quips. Auto-publishes **MQTT discovery** so Home Assistant gets clean controls out-of-the-box.
 
 The service uses a serialized event controller: MQTT and PIR callbacks only enqueue work, while one controller owns speech, listening, eyes, and jaw movement. This prevents overlapping conversations and hardware races without adding inter-process latency.
@@ -436,12 +438,17 @@ Home Assistant exposes whether systemd enabled the watchdog, its state, controll
 
 ## Checks
 
-Run the hardware-free checks from `skeleton_project/`:
+Every pull request that changes the skeleton project runs the same hardware-free checks in GitHub Actions. Run the complete gate locally from `skeleton_project/`:
 
 ```bash
+python3 -m pip install -r requirements-ci.txt
 python3 -m unittest discover -s tests -v
-python3 -m compileall -q .
+python3 -m compileall -q holiday_skeleton scripts tests skeleton_all_in_one_mqtt.py
+python3 -c "import skeleton_all_in_one_mqtt"
+python3 scripts/validate_project.py
 ```
+
+The validator loads the packaged personality and scene libraries with production bounds, verifies their cross-references and any WAV cues, parses every Home Assistant YAML file, and requires every MQTT discovery topic and `uniq_id` to be unique with a strict JSON payload. It does not require GPIO, audio hardware, Piper, Ollama, Home Assistant, or an MQTT broker.
 
 ## License
 [MIT](LICENSE)
