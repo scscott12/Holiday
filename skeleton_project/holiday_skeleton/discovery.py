@@ -102,6 +102,98 @@ def discovery_messages(device_name: str) -> List[DiscoveryMessage]:
         "name": f"{title} Ready", "uniq_id": f"holiday_{device_name}_ready",
         "stat_t": f"{base}/ready", "pl_on": "ON", "pl_off": "OFF",
     })
+    add("binary_sensor", "health_ok", {
+        "name": f"{title} Health OK",
+        "uniq_id": f"holiday_{device_name}_health_ok",
+        "stat_t": f"{base}/health/ok", "pl_on": "ON", "pl_off": "OFF",
+    })
+    add("sensor", "health", {
+        "name": f"{title} Health",
+        "uniq_id": f"holiday_{device_name}_health",
+        "stat_t": f"{base}/health/status",
+        "json_attr_t": f"{base}/health/components",
+        "icon": "mdi:heart-pulse",
+    })
+    add("sensor", "health_reasons", {
+        "name": f"{title} Health Reasons",
+        "uniq_id": f"holiday_{device_name}_health_reasons",
+        "stat_t": f"{base}/health/reasons",
+    })
+    add("sensor", "health_last_update", {
+        "name": f"{title} Health Last Update",
+        "uniq_id": f"holiday_{device_name}_health_last_update",
+        "stat_t": f"{base}/health/last_update",
+        "device_class": "timestamp",
+    })
+    add("sensor", "health_heartbeat", {
+        "name": f"{title} Health Heartbeat",
+        "uniq_id": f"holiday_{device_name}_health_heartbeat",
+        "stat_t": f"{base}/health/heartbeat",
+    })
+    add("sensor", "cpu_temperature", {
+        "name": f"{title} CPU Temperature",
+        "uniq_id": f"holiday_{device_name}_cpu_temperature",
+        "stat_t": f"{base}/health/cpu_temperature",
+        "unit_of_measurement": "°C", "device_class": "temperature",
+        "state_class": "measurement",
+    })
+    add("sensor", "cpu_load", {
+        "name": f"{title} CPU Load 1m",
+        "uniq_id": f"holiday_{device_name}_cpu_load",
+        "stat_t": f"{base}/health/load_1m",
+        "state_class": "measurement",
+    })
+    add("sensor", "memory_use", {
+        "name": f"{title} Memory Use",
+        "uniq_id": f"holiday_{device_name}_memory_use",
+        "stat_t": f"{base}/health/memory_percent",
+        "unit_of_measurement": "%", "state_class": "measurement",
+    })
+    add("sensor", "disk_use", {
+        "name": f"{title} Disk Use",
+        "uniq_id": f"holiday_{device_name}_disk_use",
+        "stat_t": f"{base}/health/disk_percent",
+        "unit_of_measurement": "%", "state_class": "measurement",
+    })
+    add("sensor", "uptime", {
+        "name": f"{title} Uptime",
+        "uniq_id": f"holiday_{device_name}_uptime",
+        "stat_t": f"{base}/health/uptime",
+        "unit_of_measurement": "s", "device_class": "duration",
+        "state_class": "total_increasing",
+    })
+    add("binary_sensor", "throttled", {
+        "name": f"{title} Pi Throttled",
+        "uniq_id": f"holiday_{device_name}_throttled",
+        "stat_t": f"{base}/health/throttled", "pl_on": "ON", "pl_off": "OFF",
+        "device_class": "problem",
+    })
+    add("sensor", "throttle_flags", {
+        "name": f"{title} Pi Throttle Flags",
+        "uniq_id": f"holiday_{device_name}_throttle_flags",
+        "stat_t": f"{base}/health/throttle_flags",
+    })
+    add("sensor", "audio_dropped_frames", {
+        "name": f"{title} Audio Dropped Frames",
+        "uniq_id": f"holiday_{device_name}_audio_dropped_frames",
+        "stat_t": f"{base}/health/audio_dropped_frames",
+        "state_class": "total_increasing",
+    })
+    latency_labels = {
+        "tts_first_audio": "TTS First Audio",
+        "greeting_first_audio": "Greeting First Audio",
+        "response_first_audio": "Response First Audio",
+        "llm_reply": "LLM Reply",
+    }
+    for metric, label in latency_labels.items():
+        for statistic, suffix in (("average", "Rolling Average"), ("p95", "Rolling P95")):
+            key = f"health_{metric}_{statistic}"
+            add("sensor", key, {
+                "name": f"{title} {label} {suffix}",
+                "uniq_id": f"holiday_{device_name}_{key}",
+                "stat_t": f"{base}/health/latency/{metric}_{statistic}",
+                "unit_of_measurement": "s", "state_class": "measurement",
+            })
     add("sensor", "status", {
         "name": f"{title} Status", "uniq_id": f"holiday_{device_name}_status",
         "stat_t": f"{base}/status",

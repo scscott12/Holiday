@@ -47,3 +47,21 @@ views:
           - sensor.skeleton_greeting_first_audio
           - sensor.skeleton_tts_speak_time
           - sensor.skeleton_transcript
+      - type: entities
+        title: Health & Performance
+        entities:
+          - binary_sensor.skeleton_health_ok
+          - sensor.skeleton_health
+          - sensor.skeleton_health_reasons
+          - sensor.skeleton_health_last_update
+          - sensor.skeleton_cpu_temperature
+          - sensor.skeleton_cpu_load_1m
+          - sensor.skeleton_memory_use
+          - sensor.skeleton_disk_use
+          - binary_sensor.skeleton_pi_throttled
+          - sensor.skeleton_pi_throttle_flags
+          - sensor.skeleton_audio_dropped_frames
+          - sensor.skeleton_response_first_audio_rolling_average
+          - sensor.skeleton_response_first_audio_rolling_p95
+          - sensor.skeleton_llm_reply_rolling_average
+          - sensor.skeleton_llm_reply_rolling_p95

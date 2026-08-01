@@ -95,6 +95,35 @@ class DiscoveryTests(unittest.TestCase):
             "holiday/skeleton/idle_life/interrupted",
         )
 
+    def test_health_summary_and_component_attributes_are_discovered(self):
+        messages = dict(discovery_messages("skeleton"))
+
+        health = messages["homeassistant/sensor/skeleton/health/config"]
+        self.assertEqual(health["stat_t"], "holiday/skeleton/health/status")
+        self.assertEqual(
+            health["json_attr_t"], "holiday/skeleton/health/components"
+        )
+        self.assertEqual(
+            messages["homeassistant/binary_sensor/skeleton/health_ok/config"]["stat_t"],
+            "holiday/skeleton/health/ok",
+        )
+
+    def test_pi_telemetry_and_rolling_latency_are_discovered(self):
+        messages = dict(discovery_messages("skeleton"))
+
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/cpu_temperature/config"]["stat_t"],
+            "holiday/skeleton/health/cpu_temperature",
+        )
+        self.assertEqual(
+            messages["homeassistant/binary_sensor/skeleton/throttled/config"]["stat_t"],
+            "holiday/skeleton/health/throttled",
+        )
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/health_response_first_audio_p95/config"]["stat_t"],
+            "holiday/skeleton/health/latency/response_first_audio_p95",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
