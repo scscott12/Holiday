@@ -98,6 +98,58 @@ def discovery_messages(device_name: str) -> List[DiscoveryMessage]:
         "uniq_id": f"holiday_{device_name}_idle_life_interrupted",
         "stat_t": f"{base}/idle_life/interrupted",
     })
+    add("binary_sensor", "scene_active", {
+        "name": f"{title} Scene Active",
+        "uniq_id": f"holiday_{device_name}_scene_active",
+        "stat_t": f"{base}/scene/active", "pl_on": "ON", "pl_off": "OFF",
+    })
+    add("sensor", "scene_state", {
+        "name": f"{title} Scene State",
+        "uniq_id": f"holiday_{device_name}_scene_state",
+        "stat_t": f"{base}/scene/state",
+    })
+    add("sensor", "scene_current", {
+        "name": f"{title} Current Scene",
+        "uniq_id": f"holiday_{device_name}_scene_current",
+        "stat_t": f"{base}/scene/current",
+    })
+    add("sensor", "scene_step", {
+        "name": f"{title} Scene Step",
+        "uniq_id": f"holiday_{device_name}_scene_step",
+        "stat_t": f"{base}/scene/step",
+    })
+    add("sensor", "scene_library", {
+        "name": f"{title} Scene Library",
+        "uniq_id": f"holiday_{device_name}_scene_library",
+        "stat_t": f"{base}/scene/library_count",
+        "json_attr_t": f"{base}/scene/library",
+    })
+    add("sensor", "scene_count", {
+        "name": f"{title} Scene Count",
+        "uniq_id": f"holiday_{device_name}_scene_count",
+        "stat_t": f"{base}/scene/count",
+    })
+    add("sensor", "scene_interrupted", {
+        "name": f"{title} Scenes Interrupted",
+        "uniq_id": f"holiday_{device_name}_scene_interrupted",
+        "stat_t": f"{base}/scene/interrupted",
+    })
+    add("sensor", "scene_last_result", {
+        "name": f"{title} Scene Last Result",
+        "uniq_id": f"holiday_{device_name}_scene_last_result",
+        "stat_t": f"{base}/scene/last_result",
+    })
+    add("sensor", "scene_last_error", {
+        "name": f"{title} Scene Last Error",
+        "uniq_id": f"holiday_{device_name}_scene_last_error",
+        "stat_t": f"{base}/scene/last_error",
+    })
+    add("sensor", "scene_last_duration", {
+        "name": f"{title} Scene Last Duration",
+        "uniq_id": f"holiday_{device_name}_scene_last_duration",
+        "stat_t": f"{base}/scene/last_duration",
+        "unit_of_measurement": "s",
+    })
     add("binary_sensor", "ready", {
         "name": f"{title} Ready", "uniq_id": f"holiday_{device_name}_ready",
         "stat_t": f"{base}/ready", "pl_on": "ON", "pl_off": "OFF",
@@ -328,6 +380,16 @@ def discovery_messages(device_name: str) -> List[DiscoveryMessage]:
     add("text", "say", {
         "name": f"{title} Say", "uniq_id": f"holiday_{device_name}_say_text",
         "cmd_t": f"{base}/say/set", "mode": "text", "min": 1, "max": 255,
+    })
+    add("text", "scene_play", {
+        "name": f"{title} Play Scene",
+        "uniq_id": f"holiday_{device_name}_scene_play",
+        "cmd_t": f"{base}/scene/play/set", "mode": "text", "min": 1, "max": 64,
+    })
+    add("button", "scene_stop", {
+        "name": f"{title} Stop Scene",
+        "uniq_id": f"holiday_{device_name}_scene_stop",
+        "cmd_t": f"{base}/scene/stop/set",
     })
     add("button", "blink", {
         "name": f"{title} Blink", "uniq_id": f"holiday_{device_name}_blink_btn",

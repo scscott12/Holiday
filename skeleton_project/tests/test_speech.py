@@ -255,6 +255,41 @@ class PiperSpeechEngineTests(unittest.TestCase):
         self.assertEqual(self.audio.stream.aborted, 1)
         self.assertEqual(self.jaw[-1], 0.25)
 
+    def test_pcm_cue_uses_persistent_stream_volume_and_optional_jaw(self):
+        engine = self.make_engine([])
+        self.volume[0] = 0.5
+        pcm = np.full(20, 1000, dtype=np.int16).tobytes()
+
+        metrics = engine.play_pcm16(
+            pcm,
+            animate_jaw=True,
+            volume_multiplier=0.5,
+        )
+
+        played = np.frombuffer(b"".join(self.audio.stream.writes), dtype=np.int16)
+        np.testing.assert_array_equal(played, np.full(20, 250, dtype=np.int16))
+        self.assertEqual(metrics.frames_written, 2)
+        self.assertGreater(max(self.jaw), 0.25)
+        self.assertEqual(self.jaw[-1], 0.25)
+
+    def test_pcm_cue_stops_within_one_frame(self):
+        engine = self.make_engine([])
+        stop_event = threading.Event()
+        pcm = np.full(30, 1000, dtype=np.int16).tobytes()
+        original_write = self.audio.stream.write
+
+        def write_then_stop(data):
+            original_write(data)
+            stop_event.set()
+
+        self.audio.stream.write = write_then_stop
+
+        metrics = engine.play_pcm16(pcm, stop_event=stop_event)
+
+        self.assertTrue(metrics.interrupted)
+        self.assertEqual(metrics.frames_written, 1)
+        self.assertEqual(self.audio.stream.aborted, 1)
+
     def test_close_is_idempotent(self):
         engine = self.make_engine([])
         engine.close()

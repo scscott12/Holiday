@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "scenes": {
+    "awakening": {
+      "description": "A short eye flicker, greeting, and mechanical jaw twitch.",
+      "steps": [
+        {"action": "eyes", "level": 0.05},
+        {"action": "flicker", "duration": 1.2, "base": 0.03, "span": 0.42, "step_ms": 70},
+        {"action": "speak", "text": "Easy there, matey. Waking the dead before sunset is terribly rude."},
+        {"action": "pause", "duration_ms": 250},
+        {"action": "jaw", "level": 0.35, "duration_ms": 180},
+        {"action": "blink", "count": 2, "period_ms": 180, "low": 0.0, "high": 0.7}
+      ]
+    },
+    "warning": {
+      "description": "A bright warning with a rapid closing flicker.",
+      "steps": [
+        {"action": "eyes", "level": 1.0, "duration_ms": 300},
+        {"action": "speak", "text": "Careful where you step. Some of us are still using these bones."},
+        {"action": "flicker", "duration_ms": 700, "base": 0.05, "span": 0.75, "step_ms": 45}
+      ]
+    },
+    "silent_scare": {
+      "description": "A speech-free sequence for testing eyes and jaw movement.",
+      "steps": [
+        {"action": "eyes", "level": 0.8, "duration_ms": 180},
+        {"action": "jaw", "level": 0.65, "duration_ms": 220},
+        {"action": "pause", "duration_ms": 120},
+        {"action": "blink", "count": 4, "period_ms": 110, "low": 0.0, "high": 1.0}
+      ]
+    }
+  }
+}

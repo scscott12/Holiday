@@ -85,6 +85,56 @@ class SkeletonControllerTests(unittest.TestCase):
         self.assertEqual(interrupted, [True])
         self.assertFalse(worker.is_alive())
 
+    def test_foreground_event_interrupts_active_scene_before_running(self):
+        scene_started = threading.Event()
+        scene_finished = threading.Event()
+        handled = []
+        interrupted = []
+        controller = None
+
+        def handler(event):
+            handled.append(event.kind)
+            if event.kind is EventKind.PLAY_SCENE:
+                scene_started.set()
+                interrupted.append(
+                    controller.scene_interrupt_event.wait(timeout=1.0)
+                )
+                scene_finished.set()
+            else:
+                controller.request_stop("test")
+
+        controller = SkeletonController(handler)
+        self.assertTrue(controller.enqueue(EventKind.PLAY_SCENE, "awakening", "test"))
+        worker = threading.Thread(target=controller.run_forever)
+        worker.start()
+        self.assertTrue(scene_started.wait(timeout=1.0))
+
+        self.assertTrue(controller.enqueue(EventKind.SAY, "visitor", "test"))
+
+        self.assertTrue(scene_finished.wait(timeout=1.0))
+        worker.join(timeout=1.0)
+        self.assertEqual(interrupted, [True])
+        self.assertEqual(handled, [EventKind.PLAY_SCENE, EventKind.SAY])
+        self.assertFalse(worker.is_alive())
+
+    def test_scene_yields_when_a_later_event_is_already_queued(self):
+        observed = []
+        controller = None
+
+        def handler(event):
+            if event.kind is EventKind.PLAY_SCENE:
+                observed.append(controller.scene_interrupt_event.is_set())
+            else:
+                controller.request_stop("test")
+
+        controller = SkeletonController(handler)
+        controller.enqueue(EventKind.PLAY_SCENE, "awakening", "test")
+        controller.enqueue(EventKind.SAY, "visitor", "test")
+
+        controller.run_forever()
+
+        self.assertEqual(observed, [True])
+
 
 if __name__ == "__main__":
     unittest.main()

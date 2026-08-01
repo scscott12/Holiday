@@ -10,6 +10,8 @@ sudo usermod -aG i2c,audio,video,gpio $USER
 sudo mkdir -p /opt/holiday-skeleton
 sudo cp skeleton_all_in_one_mqtt.py /opt/holiday-skeleton/
 sudo cp -r holiday_skeleton /opt/holiday-skeleton/
+sudo cp scenes.json /opt/holiday-skeleton/
+sudo mkdir -p /opt/holiday-skeleton/sounds
 cd /opt/holiday-skeleton
 sudo python3 -m venv venv
 sudo /opt/holiday-skeleton/venv/bin/pip install --upgrade pip
@@ -52,7 +54,7 @@ pip install paho-mqtt
 - Speech: Piper loads once at service startup and streams PCM directly to the output device.
 - AUDIO_OUTPUT_DEVICE may be a sounddevice index or unique name substring; blank uses the system default.
 - TTS_FRAME_MS=20 controls both PCM write and jaw-envelope resolution.
-- TTS_CANNED_CACHE=1 pre-renders opening/goodbye/idle lines so canned speech avoids live synthesis.
+- TTS_CANNED_CACHE=1 pre-renders opening, goodbye, idle, and scene lines so canned speech avoids live synthesis.
 - Ollama streams in the background while Piper speaks completed phrases.
 - LLM_PHRASE_MIN_CHARS / SOFT_CHARS / MAX_CHARS tune natural phrase boundaries.
 - Ollama uses /api/chat and remembers the latest LLM_MEMORY_TURNS exchanges for one visit.
@@ -66,6 +68,9 @@ pip install paho-mqtt
 - IDLE_LIFE_ENABLED=1 adds sparse eye pulses, jaw twitches, and occasional mutters while motion is armed.
 - IDLE_LIFE_MIN_SEC / MAX_SEC control cadence; IDLE_MUTTER_CHANCE controls how often an action speaks.
 - Idle actions yield immediately to PIR, MQTT, shutdown, and barge-in. Legacy TTS safely skips mutters.
+- SCENES_ENABLED=1 loads validated speech, pause, eye, jaw, and sound-cue sequences from SCENES_PATH.
+- Copy uncompressed 16-bit PCM WAV cues below SCENE_SOUND_DIR and reference relative paths in scenes.json.
+- SCENE_MAX_SECONDS=30 is a hard safety limit; PIR, MQTT, barge-in, and shutdown interrupt sooner.
 - HEALTH_INTERVAL_SEC=30 publishes component health, Pi telemetry, and latency statistics without blocking audio.
 - HEALTH_LATENCY_WINDOW=20 controls the recent-turn rolling average/P95 window.
 - CPU temperature, disk use, current throttle flags, Piper availability, and Ollama are evaluated automatically.
@@ -83,6 +88,8 @@ python3 -m compileall -q .
 ## 7) Existing-install upgrade / smoke test
 sudo cp skeleton_all_in_one_mqtt.py /opt/holiday-skeleton/
 sudo cp -r holiday_skeleton /opt/holiday-skeleton/
+sudo cp -n scenes.json /opt/holiday-skeleton/
+sudo mkdir -p /opt/holiday-skeleton/sounds
 sudo cp requirements.txt /opt/holiday-skeleton/
 sudo /opt/holiday-skeleton/venv/bin/pip install -r /opt/holiday-skeleton/requirements.txt
 sudo systemctl restart holiday-skeleton
@@ -90,7 +97,7 @@ sudo journalctl -u holiday-skeleton -f
 
 # Expected once during startup:
 # [TTS] Piper voice warm and output stream ready in ...s
-# [TTS cache] 20/20 canned lines ready in ...s (... KiB) with default prompts
+# [TTS cache] 22/22 canned lines ready in ...s (... KiB) with default prompts/scenes
 # Then send two Say commands. Both should use tts/engine=streaming and no /tmp WAV.
 # Trigger motion twice. Each configured opener should set tts/cache_hit=ON and
 # greeting_first_audio should be near zero. Dynamic Say text should report OFF.
@@ -109,3 +116,6 @@ sudo journalctl -u holiday-skeleton -f
 # health/heartbeat advances, CPU temperature is numeric, and audio dropped
 # frames remains zero. Stop Ollama briefly and verify health becomes degraded
 # while the local spoken fallback remains available, then recovers on restart.
+# Enter "awakening" in the Play Scene entity. Confirm scene/current and
+# scene/step advance, then press Stop Scene during a second run and confirm the
+# jaw rests, eyes return to idle, and scene/last_result becomes interrupted.

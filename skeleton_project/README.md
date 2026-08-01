@@ -1,6 +1,6 @@
 # Holiday Skeleton (PCA9685 + MQTT + Home Assistant)
 
-Single-process animatronic skeleton that **listens → thinks → speaks**, with **moving jaw** and **PWM eyes** via PCA9685, offline **Vosk** STT, **Piper** TTS, and optional **Ollama** LLM quips. Auto-publishes **MQTT discovery** so Home Assistant gets clean controls out-of-the-box.
+Single-process animatronic skeleton that **listens → thinks → speaks**, with **moving jaw**, **PWM eyes**, and configurable multi-step scenes via PCA9685, offline **Vosk** STT, **Piper** TTS, and optional **Ollama** LLM quips. Auto-publishes **MQTT discovery** so Home Assistant gets clean controls out-of-the-box.
 
 The service uses a serialized event controller: MQTT and PIR callbacks only enqueue work, while one controller owns speech, listening, eyes, and jaw movement. This prevents overlapping conversations and hardware races without adding inter-process latency.
 
@@ -15,12 +15,13 @@ holiday_skeleton/
   brain.py                   Ollama stream producer and phrase assembly
   health.py                  health aggregation and Pi telemetry
   idle_life.py               sparse idle-action scheduler
+  scene.py                   validated scene files, cue loading, and bounded runner
   speech.py                  warm Piper voice, PCM playback, and jaw envelope
   discovery.py               shared Home Assistant MQTT definitions
 tests/                       hardware-free unit tests
 ```
 
-Runtime states published to `holiday/skeleton/status` are `starting`, `idle`, `idle_life`, `greeting`, `listening`, `thinking`, `speaking`, `effect`, `cooldown`, `stopping`, and `error`.
+Runtime states published to `holiday/skeleton/status` are `starting`, `idle`, `idle_life`, `scene`, `greeting`, `listening`, `thinking`, `speaking`, `effect`, `cooldown`, `stopping`, and `error`.
 
 ## Hardware (quick)
 - **Raspberry Pi** (Bookworm OK)
@@ -61,6 +62,8 @@ views:
           - entity: button.skeleton_blink
           - entity: button.skeleton_flicker
           - entity: text.skeleton_say
+          - entity: text.skeleton_play_scene
+          - entity: button.skeleton_stop_scene
       - type: entities
         title: Status
         entities:
@@ -69,6 +72,10 @@ views:
           - binary_sensor.skeleton_idle_life_active
           - sensor.skeleton_idle_life_state
           - sensor.skeleton_idle_life_last_action
+          - binary_sensor.skeleton_scene_active
+          - sensor.skeleton_scene_state
+          - sensor.skeleton_current_scene
+          - sensor.skeleton_scene_step
           - sensor.skeleton_status
           - sensor.skeleton_reply_time
           - sensor.skeleton_llm_first_token
@@ -125,6 +132,10 @@ Environment="IDLE_LIFE_MAX_SEC=45.0"
 Environment="IDLE_MUTTER_CHANCE=0.12"
 Environment="IDLE_EYE_PULSE_FRAC=0.10"
 Environment="IDLE_JAW_TWITCH_FRAC=0.14"
+Environment="SCENES_ENABLED=1"
+Environment="SCENES_PATH=/opt/holiday-skeleton/scenes.json"
+Environment="SCENE_SOUND_DIR=/opt/holiday-skeleton/sounds"
+Environment="SCENE_MAX_SECONDS=30"
 Environment="HEALTH_INTERVAL_SEC=30"
 Environment="HEALTH_LATENCY_WINDOW=20"
 Environment="HEALTH_TEMP_WARN_C=75"
@@ -163,7 +174,7 @@ The service loads `PIPER_MODEL` once during startup, runs one silent inference t
 
 The jaw follows 20 ms RMS audio frames as those same frames are written to the speaker. Change `TTS_FRAME_MS` only if the servo needs slower movement; 15–25 ms is the useful range. `AUDIO_OUTPUT_DEVICE` may be a sounddevice device index or a unique device-name substring. Leave it empty to use the system default.
 
-With `TTS_CANNED_CACHE=1` (the default), every configured morning, afternoon, evening, night, goodbye, and idle-mutter line is synthesized silently during service startup. The raw PCM and jaw envelope stay in memory, so a motion greeting, goodbye, or idle mutter can write its first frame immediately without invoking Piper again. Dynamic Home Assistant text and Ollama phrases still use live streaming synthesis. Cache keys normalize whitespace, and the cache belongs only to the currently loaded voice instance, so restarting after a model, voice configuration, frame-size, or prompt change cannot replay stale audio. Set `TTS_CANNED_CACHE=0` if startup time matters more than instant canned lines.
+With `TTS_CANNED_CACHE=1` (the default), every configured morning, afternoon, evening, night, goodbye, idle-mutter, and scene-speech line is synthesized silently during service startup. The raw PCM and jaw envelope stay in memory, so a motion greeting, goodbye, idle mutter, or scene line can write its first frame immediately without invoking Piper again. Dynamic Home Assistant text and Ollama phrases still use live streaming synthesis. Cache keys normalize whitespace, and the cache belongs only to the currently loaded voice instance, so restarting after a model, voice configuration, frame-size, prompt, or scene change cannot replay stale audio. Set `TTS_CANNED_CACHE=0` if startup time matters more than instant canned lines.
 
 Home Assistant reports:
 
@@ -171,7 +182,7 @@ Home Assistant reports:
 - `sensor.skeleton_tts_model_load_time`: one-time voice load duration.
 - `sensor.skeleton_tts_warmup_time`: one-time silent inference that removes first-greeting cold start.
 - `sensor.skeleton_tts_cache_state`: `warming`, `ready`, `partial`, `disabled`, or `legacy`.
-- `sensor.skeleton_tts_cached_lines`: number of opening/goodbye lines held in memory.
+- `sensor.skeleton_tts_cached_lines`: number of opening, goodbye, idle, and scene lines held in memory.
 - `sensor.skeleton_tts_cache_warmup_time` and `sensor.skeleton_tts_cache_memory`: startup cost and RAM used by cached PCM.
 - `binary_sensor.skeleton_tts_cache_hit`: whether the latest streaming-engine utterance used cached audio.
 - `sensor.skeleton_tts_first_audio`: synthesis-to-first-PCM latency for the latest utterance.
@@ -245,6 +256,35 @@ Configuration:
 - `IDLE_LINES`: optional prompt-file list of canned mutters; these join the startup TTS cache.
 
 Turning off `switch.skeleton_motion_enabled` disarms idle life as well as visitor triggering. `switch.skeleton_idle_life_enabled` disables only ambient behaviors. Home Assistant reports `ready`, `running`, `disabled`, `disarmed`, or `stopping`, plus the latest action, total action count, and number interrupted by higher-priority activity.
+
+## Scene engine
+
+`scenes.json` defines reusable sequences without adding Python code or another hardware-owning thread. The included `awakening`, `warning`, and `silent_scare` scenes demonstrate coordinated speech, pauses, fixed eye levels, flicker, blink, and jaw movement. Enter a scene name in `text.skeleton_play_scene`, or publish it directly:
+
+```bash
+mosquitto_pub -h <broker-ip> -t holiday/skeleton/scene/play/set -m awakening
+mosquitto_pub -h <broker-ip> -t holiday/skeleton/scene/stop/set -m PRESS
+```
+
+Supported step shapes are:
+
+```json
+{"action": "speak", "text": "Careful where you step."}
+{"action": "pause", "duration_ms": 250}
+{"action": "eyes", "level": 0.6, "duration_ms": 300}
+{"action": "blink", "count": 3, "period_ms": 140, "low": 0.0, "high": 0.8}
+{"action": "flicker", "duration": 1.2, "base": 0.05, "span": 0.7, "step_ms": 60}
+{"action": "jaw", "level": 0.4, "duration_ms": 180}
+{"action": "sound", "file": "chains/rattle.wav", "volume": 0.8, "jaw": true}
+```
+
+Durations use seconds unless the key ends in `_ms`. Eye levels, jaw levels, and flicker bounds are `0.0`–`1.0`; sound volume is a multiplier from `0.0`–`2.0`. Sound files must be uncompressed 16-bit PCM WAV files below `SCENE_SOUND_DIR`. Relative subfolders are allowed, but absolute paths and `..` traversal are rejected. With streaming Piper, cues are decoded, resampled, and held in memory during startup, then played through the same warm output stream. Set `jaw` to `true` to drive the jaw from the cue envelope. The legacy `aplay` sound-cue path remains interruptible but does not apply the per-cue volume multiplier. Speech steps require streaming Piper because the legacy synthesized-WAV path cannot safely yield mid-line; animation-only scenes still work when the service reports legacy TTS.
+
+Scene files are limited to 32 scenes, 64 steps per scene, 500 characters per speech step, 30 seconds per individual timed step, and `SCENE_MAX_SECONDS` for the whole sequence. Unknown actions, unsafe sound paths, invalid ranges, and malformed JSON are rejected without stopping the core visitor interaction.
+
+Scenes are lower priority than live activity. PIR detection interrupts immediately before its hold timer finishes; any incoming MQTT command interrupts and queues behind the scene; `stop`, `wait`, or the wake name interrupts speech and sound cues through barge-in; shutdown stops between the existing 20 ms audio frames. The controller always rests the jaw and restores idle eyes afterward. Night mode caps scene brightness at the reduced full-eye level, and current global volume still applies.
+
+Home Assistant exposes scene readiness, available names, active scene, current step, run count, interruption count, last result, duration, and last error. Edit `scenes.json` or replace a WAV, then restart the service so validation, speech caching, and sound preloading run again. Set `SCENES_ENABLED=0` to disable the engine while leaving conversation and manual controls unchanged.
 
 ## Health and performance
 

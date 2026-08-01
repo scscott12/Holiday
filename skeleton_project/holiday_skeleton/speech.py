@@ -414,6 +414,74 @@ class PiperSpeechEngine:
                 cached_phrases=cached_phrases,
             )
 
+    def play_pcm16(
+        self,
+        pcm: bytes,
+        stop_event: Optional[threading.Event] = None,
+        animate_jaw: bool = False,
+        volume_multiplier: float = 1.0,
+        first_audio: Optional[Callable[[float], None]] = None,
+    ) -> SpeechMetrics:
+        """Play a preloaded mono PCM cue through the persistent output stream."""
+
+        frames = split_pcm16_frames(
+            pcm,
+            sample_rate=self.sample_rate,
+            channels=1,
+            frame_ms=self.frame_ms,
+        )
+        levels: Sequence[float]
+        if animate_jaw:
+            levels = jaw_envelope(frames)
+        else:
+            levels = (0.0,) * len(frames)
+
+        with self._lock:
+            if self._closed:
+                raise SpeechEngineError("speech engine is closed")
+            started_at = self.clock()
+            first_audio_seconds = 0.0
+            frames_written = 0
+            samples_written = 0
+            interrupted = False
+            try:
+                for frame, level in zip(frames, levels):
+                    if stop_event is not None and stop_event.is_set():
+                        interrupted = True
+                        break
+                    if animate_jaw:
+                        jaw_fraction = self.rest_fraction + (
+                            self.maximum_fraction - self.rest_fraction
+                        ) * float(level)
+                        self.jaw_set(jaw_fraction)
+                    self._stream.write(
+                        scale_pcm16(
+                            frame,
+                            self.volume_getter() * float(volume_multiplier),
+                        )
+                    )
+                    frames_written += 1
+                    samples_written += len(frame) // 2
+                    if frames_written == 1:
+                        first_audio_seconds = self.clock() - started_at
+                        if first_audio is not None:
+                            first_audio(first_audio_seconds)
+            except Exception as error:
+                raise SpeechEngineError(
+                    str(error), audio_started=frames_written > 0
+                ) from error
+            finally:
+                self.jaw_set(self.rest_fraction)
+                self._restart_stream(interrupted)
+
+            return SpeechMetrics(
+                first_audio_seconds=first_audio_seconds,
+                total_seconds=self.clock() - started_at,
+                audio_seconds=samples_written / float(self.sample_rate),
+                frames_written=frames_written,
+                interrupted=interrupted,
+            )
+
     def close(self) -> None:
         """Release the persistent PortAudio stream."""
 
