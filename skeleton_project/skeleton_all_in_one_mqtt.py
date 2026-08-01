@@ -6,7 +6,11 @@ from datetime import datetime
 import numpy as np
 
 from holiday_skeleton.audio import SpeechGate
-from holiday_skeleton.brain import OllamaStreamingClient
+from holiday_skeleton.brain import (
+    ConversationMemory,
+    OllamaStreamingClient,
+    normalize_ollama_chat_url,
+)
 from holiday_skeleton.controller import EventKind, RuntimeState, SkeletonController
 from holiday_skeleton.discovery import discovery_messages
 from holiday_skeleton.speech import PiperSpeechEngine, SpeechEngineError
@@ -84,11 +88,13 @@ MIN_VOICED_SEC   = float(envs("MIN_VOICED_SEC","0.16"))
 END_SILENCE_SEC  = float(envs("END_SILENCE_SEC","0.75"))
 MAX_UTTERANCE_SEC= float(envs("MAX_UTTERANCE_SEC","12.0"))
 
-OLLAMA_URL   = envs("OLLAMA_URL","http://127.0.0.1:11434/api/generate")
+OLLAMA_URL   = normalize_ollama_chat_url(envs("OLLAMA_CHAT_URL",envs("OLLAMA_URL","http://127.0.0.1:11434/api/chat")))
 OLLAMA_MODEL = envs("OLLAMA_MODEL","qwen2.5:0.5b")
 KEEP_ALIVE   = envs("KEEP_ALIVE","24h")
 OLLAMA_TIMEOUT = (3, 30)
-OLLAMA_OPTS  = {"num_predict": 50, "num_thread": 4, "temperature": 0.6, "repeat_penalty": 1.05, "num_ctx": 128}
+LLM_MEMORY_TURNS = max(0,int(envs("LLM_MEMORY_TURNS","3")))
+LLM_CONTEXT_TOKENS = max(128,int(envs("LLM_CONTEXT_TOKENS","512")))
+OLLAMA_OPTS  = {"num_predict": 50, "num_thread": 4, "temperature": 0.6, "repeat_penalty": 1.05, "num_ctx": LLM_CONTEXT_TOKENS}
 LLM_PHRASE_MIN_CHARS = int(envs("LLM_PHRASE_MIN_CHARS","12"))
 LLM_PHRASE_SOFT_CHARS = int(envs("LLM_PHRASE_SOFT_CHARS","36"))
 LLM_PHRASE_MAX_CHARS = int(envs("LLM_PHRASE_MAX_CHARS","72"))
@@ -406,14 +412,18 @@ def _publish_llm_metrics(result):
     mqtt_pub("llm/reply_time",f"{metrics.total_seconds:.3f}")
     mqtt_pub("llm/phrase_count",str(metrics.phrases_emitted))
 
-def stream_llm_reply(user_text:str)->str:
+def _publish_memory_turns(memory):
+    mqtt_pub("llm/memory_turns",str(memory.turn_count if memory is not None else 0))
+
+def stream_llm_reply(user_text:str,memory=None)->str:
     fallback="Arrr, I be old and forgetful — say it again, matey!"
     if _llm_client is None:
         controller.set_state(RuntimeState.SPEAKING)
         speak_with_jaw(fallback)
         return fallback
 
-    reply=_llm_client.start_reply(user_text,controller.stop_event)
+    history=memory.messages() if memory is not None else None
+    reply=_llm_client.start_reply(user_text,controller.stop_event,history=history)
     delivered=[]
 
     def phrases():
@@ -450,7 +460,10 @@ def stream_llm_reply(user_text:str)->str:
         speak_with_jaw(fallback)
         return fallback
 
-    return (result.text if result is not None else " ".join(delivered)).strip()
+    completed=(result.text if result is not None else " ".join(delivered)).strip()
+    if memory is not None and memory.remember_reply(user_text,result):
+        _publish_memory_turns(memory)
+    return completed
 
 stt_enabled=True; _VOSK_MODEL=None
 if vosk is None:
@@ -658,11 +671,12 @@ def _do_mqtt_connect():
     if mqttc is not None:
         mqtt_connect()
         mqtt_pub("ready","ON")
+        mqtt_pub("llm/memory_turns","0")
 
 def _warm_ollama():
     if not requests: return
     try:
-        requests.post(OLLAMA_URL,json={"model":OLLAMA_MODEL,"prompt":"warming","stream":False,
+        requests.post(OLLAMA_URL,json={"model":OLLAMA_MODEL,"messages":[{"role":"user","content":"warming"}],"stream":False,
                                        "keep_alive":KEEP_ALIVE,"options":{"num_predict":1}},timeout=(2,10))
     except Exception as e:
         print("[ollama warmup]",e)
@@ -741,7 +755,7 @@ def _say_goodbye():
     controller.set_state(RuntimeState.SPEAKING)
     speak_with_jaw(gb)
 
-def _conversation_loop():
+def _conversation_loop(memory):
     while not controller.stop_event.is_set():
         controller.set_state(RuntimeState.LISTENING)
         text=record_once(
@@ -757,7 +771,7 @@ def _conversation_loop():
         if EXIT_RE.search(text):
             _say_goodbye(); return
         controller.set_state(RuntimeState.THINKING)
-        reply=stream_llm_reply(text)
+        reply=stream_llm_reply(text,memory)
         if controller.stop_event.is_set(): return
         _transcript_add("assistant",reply)
 
@@ -769,13 +783,18 @@ def _manual_trigger():
         controller.set_state(RuntimeState.COOLDOWN)
         return
     _transcript_start()
+    memory=None
     try:
         opener=pick_opening_line()
+        memory=ConversationMemory(LLM_MEMORY_TURNS,opening_line=opener)
+        _publish_memory_turns(memory)
         _transcript_add("assistant",opener)
         controller.set_state(RuntimeState.GREETING)
         speak_with_jaw(opener)
-        _conversation_loop()
+        _conversation_loop(memory)
     finally:
+        if memory is not None: memory.clear()
+        _publish_memory_turns(None)
         _last_talk=time.monotonic()
         _transcript_publish_and_clear()
         if not controller.stop_event.is_set():

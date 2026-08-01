@@ -67,6 +67,7 @@ views:
           - sensor.skeleton_llm_first_token
           - sensor.skeleton_llm_first_phrase
           - sensor.skeleton_response_first_audio
+          - sensor.skeleton_memory_turns
           - sensor.skeleton_tts_engine
           - sensor.skeleton_tts_first_audio
           - sensor.skeleton_transcript
@@ -104,6 +105,8 @@ Environment="TTS_FRAME_MS=20"
 Environment="LLM_PHRASE_MIN_CHARS=12"
 Environment="LLM_PHRASE_SOFT_CHARS=36"
 Environment="LLM_PHRASE_MAX_CHARS=72"
+Environment="LLM_MEMORY_TURNS=3"
+Environment="LLM_CONTEXT_TOKENS=512"
 ```
 
 Speech timing is split into three controls:
@@ -154,6 +157,16 @@ Home Assistant reports each layer separately:
 - `sensor.skeleton_tts_first_audio`: first-phrase Piper synthesis latency only.
 
 The full generated response is retained for the transcript even though it is spoken in several phrases. If Ollama fails before producing a phrase, the skeleton speaks its local fallback line.
+
+## Short-term conversation memory
+
+Ollama replies now use `/api/chat`. During one motion-triggered visit, each request includes the skeleton's system prompt, its opening line, and up to the latest `LLM_MEMORY_TURNS` completed visitor/skeleton exchanges. This lets a visitor naturally ask follow-ups such as “what do you mean?” without adding a database or another service.
+
+The default is three exchanges with a 512-token context window. Set `LLM_MEMORY_TURNS=0` to disable history, or raise `LLM_CONTEXT_TOKENS` if you deliberately configure longer prompts and replies. More context consumes additional Pi memory and prompt-processing time, so three short turns is the recommended balance for this prop.
+
+Only successful, uninterrupted Ollama replies enter memory. The entire session is cleared on goodbye, listening timeout, shutdown, or completion of the visit; it is never written to disk or shared with the next visitor. Home Assistant's `sensor.skeleton_memory_turns` shows the number of retained exchanges during the active visit and returns to zero when it ends.
+
+`OLLAMA_CHAT_URL` may override the default `http://127.0.0.1:11434/api/chat`. Existing `OLLAMA_URL` settings ending in `/api/generate` are translated to `/api/chat` automatically for upgrade compatibility.
 
 ## Checks
 

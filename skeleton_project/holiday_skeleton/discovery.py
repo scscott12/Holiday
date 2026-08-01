@@ -70,6 +70,11 @@ def discovery_messages(device_name: str) -> List[DiscoveryMessage]:
         "uniq_id": f"holiday_{device_name}_llm_phrase_count",
         "stat_t": f"{base}/llm/phrase_count",
     })
+    add("sensor", "llm_memory_turns", {
+        "name": f"{title} Memory Turns",
+        "uniq_id": f"holiday_{device_name}_llm_memory_turns",
+        "stat_t": f"{base}/llm/memory_turns",
+    })
     add("sensor", "tts_engine", {
         "name": f"{title} TTS Engine", "uniq_id": f"holiday_{device_name}_tts_engine",
         "stat_t": f"{base}/tts/engine",

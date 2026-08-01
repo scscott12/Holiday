@@ -23,6 +23,7 @@ views:
           - sensor.skeleton_llm_first_token
           - sensor.skeleton_llm_first_phrase
           - sensor.skeleton_response_first_audio
+          - sensor.skeleton_memory_turns
           - sensor.skeleton_tts_engine
           - sensor.skeleton_tts_model_load_time
           - sensor.skeleton_tts_warmup_time

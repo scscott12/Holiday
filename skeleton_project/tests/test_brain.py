@@ -2,7 +2,14 @@ import json
 import threading
 import unittest
 
-from holiday_skeleton.brain import OllamaStreamingClient, PhraseChunker
+from holiday_skeleton.brain import (
+    ConversationMemory,
+    OllamaStreamingClient,
+    PhraseChunker,
+    ReplyMetrics,
+    ReplyResult,
+    normalize_ollama_chat_url,
+)
 
 
 class FakeResponse:
@@ -57,7 +64,10 @@ class BlockingResponse(FakeResponse):
         self.started.set()
         self.released.wait(timeout=1.0)
         if not self.closed:
-            yield json.dumps({"response": "Too late.", "done": True}).encode("utf-8")
+            yield json.dumps({
+                "message": {"role": "assistant", "content": "Too late."},
+                "done": True,
+            }).encode("utf-8")
 
     def close(self):
         super().close()
@@ -89,13 +99,81 @@ class PhraseChunkerTests(unittest.TestCase):
         self.assertEqual(chunker.finish(), ["six seven eight nine"])
 
 
+class ConversationMemoryTests(unittest.TestCase):
+    def test_generate_endpoint_is_upgraded_for_existing_installs(self):
+        self.assertEqual(
+            normalize_ollama_chat_url("http://127.0.0.1:11434/api/generate/"),
+            "http://127.0.0.1:11434/api/chat",
+        )
+        self.assertEqual(
+            normalize_ollama_chat_url("http://ollama:11434/api/chat"),
+            "http://ollama:11434/api/chat",
+        )
+
+    def test_opening_and_completed_turns_become_chat_history(self):
+        memory = ConversationMemory(3, opening_line="  Ahoy   there! ")
+
+        self.assertTrue(memory.remember("Who are you?", "A retired pirate."))
+
+        self.assertEqual(memory.messages(), [
+            {"role": "assistant", "content": "Ahoy there!"},
+            {"role": "user", "content": "Who are you?"},
+            {"role": "assistant", "content": "A retired pirate."},
+        ])
+
+    def test_only_latest_configured_turns_are_retained(self):
+        memory = ConversationMemory(2)
+        memory.remember("one", "first")
+        memory.remember("two", "second")
+        memory.remember("three", "third")
+
+        self.assertEqual(memory.turn_count, 2)
+        self.assertEqual(memory.messages(), [
+            {"role": "user", "content": "two"},
+            {"role": "assistant", "content": "second"},
+            {"role": "user", "content": "three"},
+            {"role": "assistant", "content": "third"},
+        ])
+
+    def test_disabled_memory_and_clear_leave_no_history(self):
+        memory = ConversationMemory(0, opening_line="Hello")
+
+        self.assertFalse(memory.remember("question", "answer"))
+        self.assertEqual(memory.messages(), [])
+        memory.clear()
+
+        self.assertEqual(memory.turn_count, 0)
+        self.assertEqual(memory.messages(), [])
+
+    def test_failed_or_interrupted_reply_is_not_remembered(self):
+        metrics = ReplyMetrics(0.1, 0.2, 0.3, 2, 1)
+        interrupted = ReplyMetrics(0.1, 0.2, 0.3, 2, 1, interrupted=True)
+        memory = ConversationMemory(3)
+
+        self.assertFalse(memory.remember_reply(
+            "first question",
+            ReplyResult("partial answer", interrupted),
+        ))
+        self.assertFalse(memory.remember_reply(
+            "second question",
+            ReplyResult("", metrics, error="model unavailable"),
+        ))
+        self.assertTrue(memory.remember_reply(
+            "real question",
+            ReplyResult("complete answer", metrics),
+        ))
+
+        self.assertEqual(memory.turn_count, 1)
+        self.assertEqual(memory.messages()[0]["content"], "real question")
+
+
 class OllamaStreamingClientTests(unittest.TestCase):
     def make_client(self, messages):
         self.response = FakeResponse(messages)
         self.http = FakeHttp(self.response)
         return OllamaStreamingClient(
             http_client=self.http,
-            url="http://ollama/api/generate",
+            url="http://ollama/api/chat",
             model="tiny",
             system_prompt="Be brief.",
             keep_alive="24h",
@@ -107,12 +185,17 @@ class OllamaStreamingClientTests(unittest.TestCase):
 
     def test_streams_phrases_and_retains_complete_reply(self):
         client = self.make_client([
-            {"response": "Ahoy there, ", "done": False},
-            {"response": "matey! ", "done": False},
-            {"response": "The tide is weird.", "done": True},
+            {"message": {"role": "assistant", "content": "Ahoy there, "}, "done": False},
+            {"message": {"role": "assistant", "content": "matey! "}, "done": False},
+            {"message": {"role": "assistant", "content": "The tide is weird."}, "done": True},
         ])
 
-        reply = client.start_reply("Hello")
+        history = [
+            {"role": "assistant", "content": "Opening line."},
+            {"role": "user", "content": "Earlier question"},
+            {"role": "assistant", "content": "Earlier answer"},
+        ]
+        reply = client.start_reply("Hello", history=history)
         phrases = list(reply)
         result = reply.result
 
@@ -127,10 +210,16 @@ class OllamaStreamingClientTests(unittest.TestCase):
         self.assertTrue(self.response.closed)
 
         url, kwargs = self.http.calls[0]
-        self.assertEqual(url, "http://ollama/api/generate")
+        self.assertEqual(url, "http://ollama/api/chat")
         self.assertTrue(kwargs["stream"])
         self.assertTrue(kwargs["json"]["stream"])
-        self.assertEqual(kwargs["json"]["prompt"], "Hello")
+        self.assertNotIn("prompt", kwargs["json"])
+        self.assertNotIn("system", kwargs["json"])
+        self.assertEqual(kwargs["json"]["messages"], [
+            {"role": "system", "content": "Be brief."},
+            *history,
+            {"role": "user", "content": "Hello"},
+        ])
         self.assertEqual(self.response.iter_line_kwargs[0]["chunk_size"], 1)
 
     def test_server_error_is_exposed_without_crashing_consumer(self):
@@ -145,15 +234,15 @@ class OllamaStreamingClientTests(unittest.TestCase):
     def test_first_phrase_is_available_before_generation_finishes(self):
         release = threading.Event()
         response = GatedResponse(
-            {"response": "First phrase. ", "done": False},
-            {"response": "Second phrase.", "done": True},
+            {"message": {"role": "assistant", "content": "First phrase. "}, "done": False},
+            {"message": {"role": "assistant", "content": "Second phrase."}, "done": True},
             release,
         )
         self.response = response
         self.http = FakeHttp(response)
         client = OllamaStreamingClient(
             http_client=self.http,
-            url="http://ollama/api/generate",
+            url="http://ollama/api/chat",
             model="tiny",
             system_prompt="Be brief.",
             keep_alive="24h",
@@ -187,7 +276,7 @@ class OllamaStreamingClientTests(unittest.TestCase):
         http = FakeHttp(response)
         client = OllamaStreamingClient(
             http_client=http,
-            url="http://ollama/api/generate",
+            url="http://ollama/api/chat",
             model="tiny",
             system_prompt="Be brief.",
             keep_alive="24h",

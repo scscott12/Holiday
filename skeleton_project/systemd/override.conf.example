@@ -29,3 +29,8 @@ Environment="TTS_FRAME_MS=20"
 Environment="LLM_PHRASE_MIN_CHARS=12"
 Environment="LLM_PHRASE_SOFT_CHARS=36"
 Environment="LLM_PHRASE_MAX_CHARS=72"
+
+# Keep only a few completed exchanges from the current visitor. Memory resets
+# when that visit ends and is never persisted.
+Environment="LLM_MEMORY_TURNS=3"
+Environment="LLM_CONTEXT_TOKENS=512"
