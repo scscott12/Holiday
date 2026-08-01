@@ -47,6 +47,11 @@ from holiday_skeleton.settings import (
     SettingsConfigError,
 )
 from holiday_skeleton.speech import PiperSpeechEngine, SpeechEngineError
+from holiday_skeleton.watchdog import (
+    ControllerWatchdog,
+    WatchdogSnapshot,
+    WatchdogState,
+)
 
 def _safe_im(name, sub=None):
     try:
@@ -149,6 +154,7 @@ HEALTH_TEMP_CRITICAL_C = float(envs("HEALTH_TEMP_CRITICAL_C","82"))
 HEALTH_DISK_WARN_PERCENT = float(envs("HEALTH_DISK_WARN_PERCENT","90"))
 HEALTH_DISK_CRITICAL_PERCENT = float(envs("HEALTH_DISK_CRITICAL_PERCENT","97"))
 OLLAMA_HEALTHCHECK_ENABLED = envs("OLLAMA_HEALTHCHECK_ENABLED","1").strip().lower() in ("1","true","yes","on")
+WATCHDOG_CONTROLLER_STALE_SEC = float(envs("WATCHDOG_CONTROLLER_STALE_SEC","45"))
 
 VOSK_RATE        = int(envs("VOSK_RATE","16000"))
 SD_BLOCKSIZE     = int(envs("SD_BLOCKSIZE","1024"))
@@ -326,6 +332,7 @@ _mqtt_connected=False
 _runtime_ready=False
 controller=None
 _health=None
+_watchdog=None
 
 def mqtt_pub(topic,payload,retain=False):
     try:
@@ -348,6 +355,57 @@ def _health_increment(name,amount=1):
     if _health is not None:
         _health.increment(name,amount)
 
+def _publish_watchdog_snapshot(snapshot=None):
+    if snapshot is None and _watchdog is not None:
+        snapshot=_watchdog.snapshot()
+    if snapshot is None: return
+    age=snapshot.controller_age_seconds
+    mqtt_pub("watchdog/enabled","ON" if snapshot.enabled else "OFF",retain=True)
+    mqtt_pub("watchdog/state",snapshot.state.value,retain=True)
+    mqtt_pub("watchdog/controller_age",_metric_text(age),retain=True)
+    mqtt_pub("watchdog/last_feed",snapshot.last_feed,retain=True)
+    mqtt_pub("watchdog/feed_count",str(snapshot.feed_count),retain=True)
+    mqtt_pub("watchdog/last_error",snapshot.last_error or "none",retain=True)
+
+def _watchdog_changed(snapshot:WatchdogSnapshot):
+    if snapshot.state is WatchdogState.DISABLED:
+        state=ComponentState.DISABLED; detail="not running under systemd watchdog"
+        critical=False
+    elif snapshot.state is WatchdogState.STARTING:
+        state=ComponentState.STARTING; detail=snapshot.last_error or "controller heartbeat pending"
+        critical=False
+    elif snapshot.state is WatchdogState.READY:
+        state=ComponentState.READY
+        detail=(
+            f"systemd watchdog active; controller stale limit "
+            f"{float(snapshot.stale_after_seconds or 0.0):.1f}s"
+        )
+        critical=False
+    elif snapshot.state is WatchdogState.STALE:
+        state=ComponentState.FAILED; detail=snapshot.last_error
+        critical=True
+    elif snapshot.state is WatchdogState.ERROR:
+        state=ComponentState.DEGRADED; detail=snapshot.last_error
+        critical=False
+    else:
+        state=ComponentState.STOPPING; detail="watchdog stopping"
+        critical=False
+    _health_set("watchdog",state,detail,critical)
+    _publish_watchdog_snapshot(snapshot)
+
+def _init_systemd_watchdog():
+    global _watchdog
+    _watchdog=ControllerWatchdog.from_environment(
+        stale_after_seconds=WATCHDOG_CONTROLLER_STALE_SEC,
+        changed=_watchdog_changed,
+    )
+    _watchdog.notifier.status("warming skeleton runtime")
+    _watchdog_changed(_watchdog.snapshot())
+
+def _controller_heartbeat(state):
+    if _watchdog is not None:
+        _watchdog.pulse(getattr(state,"value",state))
+
 def _publish_health_snapshot(snapshot:HealthSnapshot):
     telemetry=snapshot.telemetry
     mqtt_pub("health/status",snapshot.state.value,retain=True)
@@ -365,6 +423,7 @@ def _publish_health_snapshot(snapshot:HealthSnapshot):
     mqtt_pub("health/throttled","ON" if telemetry.currently_throttled else "OFF",retain=True)
     mqtt_pub("health/throttle_flags",",".join(telemetry.throttle_flags) or "none",retain=True)
     mqtt_pub("health/audio_dropped_frames",str(snapshot.counters.get("audio_dropped_frames",0)),retain=True)
+    _publish_watchdog_snapshot()
     for name in ("tts_first_audio","greeting_first_audio","response_first_audio","llm_reply"):
         metrics=snapshot.latencies.get(name)
         mqtt_pub(f"health/latency/{name}_average",_metric_text(metrics.average if metrics else None),retain=True)
@@ -445,6 +504,7 @@ def _on_connect(client,userdata,flags,rc,properties=None):
         _publish_personality_state()
         _publish_operator_controls()
         _publish_settings_state()
+        _publish_watchdog_snapshot()
         if _health is not None: _health.publish_now(sample=False)
     else:
         _health_set("mqtt",ComponentState.FAILED,f"connection rc={rc}")
@@ -806,6 +866,7 @@ def stream_llm_reply(user_text:str,memory=None):
 
     def phrases():
         for phrase in reply:
+            if controller is not None: controller.heartbeat()
             if not delivered:
                 controller.set_state(RuntimeState.SPEAKING)
             delivered.append(phrase)
@@ -903,6 +964,7 @@ def record_once(input_index:int,capture_rate:int,timeout_s:float,stop_event=None
         with stream:
             while True:
                 now=time.monotonic()
+                if controller is not None: controller.heartbeat()
                 if stop_event is not None and stop_event.is_set(): return ""
                 if not gate.speaking and now>=start_deadline: break
                 if gate.speaking and (
@@ -1652,6 +1714,7 @@ def _publish_scene_ready_state():
 
 def _scene_progress(scene,index,step):
     global _scene_current,_scene_step
+    if controller is not None: controller.heartbeat()
     _scene_current=scene.name
     _scene_step=f"{index}/{len(scene.steps)}:{step.action.value}"
     mqtt_pub("scene/current",_scene_current,retain=True)
@@ -2102,6 +2165,9 @@ def _cleanup():
     _runtime_ready=False
     _cancel_motion_timer()
     try:
+        if _watchdog is not None: _watchdog.stop("skeleton runtime stopping")
+    except Exception: pass
+    try:
         if _health is not None:
             _health.set_component("runtime",ComponentState.STOPPING,"service stopping",True,publish=False)
             _health.publish_now(sample=False)
@@ -2143,14 +2209,17 @@ def _cleanup():
 
 def main():
     global controller,_runtime_ready
+    _init_health_monitor()
+    _init_systemd_watchdog()
     controller=SkeletonController(
         _handle_event,
         _runtime_state_changed,
         idle_handler=_idle_tick,
+        heartbeat=_controller_heartbeat,
     )
+    controller.heartbeat()
     signal.signal(signal.SIGINT,_signal_handler)
     signal.signal(signal.SIGTERM,_signal_handler)
-    _init_health_monitor()
     _init_persistent_settings()
     _init_personality_library()
     _do_mqtt_connect()
@@ -2164,6 +2233,10 @@ def main():
     _init_idle_life()
     _runtime_ready=True
     _health_set("runtime",ComponentState.READY,"controller ready",True,publish=False)
+    controller.heartbeat()
+    if _watchdog is not None:
+        _watchdog.ready("skeleton controller ready")
+        _watchdog.start()
     if _health is not None: _health.start()
     else: mqtt_pub("ready","ON",retain=True)
     print("👀 Waiting for motion or MQTT commands…")

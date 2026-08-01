@@ -135,6 +135,26 @@ class SkeletonControllerTests(unittest.TestCase):
 
         self.assertEqual(observed, [True])
 
+    def test_controller_heartbeat_reports_state_and_survives_callback_failure(self):
+        observed = []
+        controller = None
+
+        def heartbeat(state):
+            observed.append(state)
+            if len(observed) == 2:
+                raise RuntimeError("watchdog reporting must be isolated")
+
+        def handler(_event):
+            controller.request_stop("test")
+
+        controller = SkeletonController(handler, heartbeat=heartbeat)
+        controller.enqueue(EventKind.SAY, "hello", "test")
+
+        controller.run_forever()
+
+        self.assertIn(RuntimeState.IDLE, observed)
+        self.assertEqual(controller.state, RuntimeState.STOPPING)
+
 
 if __name__ == "__main__":
     unittest.main()

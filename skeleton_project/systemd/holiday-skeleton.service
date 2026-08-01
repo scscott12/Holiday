@@ -4,7 +4,8 @@ After=network-online.target sound.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
 User=scscott
 Group=scscott
 StateDirectory=holiday-skeleton
@@ -13,6 +14,9 @@ WorkingDirectory=/opt/holiday-skeleton
 ExecStart=/opt/holiday-skeleton/venv/bin/python /opt/holiday-skeleton/skeleton_all_in_one_mqtt.py
 Restart=always
 RestartSec=3
+TimeoutStartSec=120
+TimeoutStopSec=20
+WatchdogSec=60
 Environment=PYTHONUNBUFFERED=1
 SupplementaryGroups=gpio i2c audio video
 

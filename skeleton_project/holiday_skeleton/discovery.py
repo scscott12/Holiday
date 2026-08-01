@@ -208,6 +208,41 @@ def discovery_messages(
         "uniq_id": f"holiday_{device_name}_settings_save_count",
         "stat_t": f"{base}/settings/save_count",
     })
+    add("binary_sensor", "watchdog_enabled", {
+        "name": f"{title} Watchdog Enabled",
+        "uniq_id": f"holiday_{device_name}_watchdog_enabled",
+        "stat_t": f"{base}/watchdog/enabled",
+        "pl_on": "ON", "pl_off": "OFF",
+    })
+    add("sensor", "watchdog_state", {
+        "name": f"{title} Watchdog State",
+        "uniq_id": f"holiday_{device_name}_watchdog_state",
+        "stat_t": f"{base}/watchdog/state",
+        "icon": "mdi:shield-refresh",
+    })
+    add("sensor", "watchdog_controller_age", {
+        "name": f"{title} Controller Heartbeat Age",
+        "uniq_id": f"holiday_{device_name}_watchdog_controller_age",
+        "stat_t": f"{base}/watchdog/controller_age",
+        "unit_of_measurement": "s", "state_class": "measurement",
+    })
+    add("sensor", "watchdog_last_feed", {
+        "name": f"{title} Watchdog Last Feed",
+        "uniq_id": f"holiday_{device_name}_watchdog_last_feed",
+        "stat_t": f"{base}/watchdog/last_feed",
+        "device_class": "timestamp",
+    })
+    add("sensor", "watchdog_feed_count", {
+        "name": f"{title} Watchdog Feed Count",
+        "uniq_id": f"holiday_{device_name}_watchdog_feed_count",
+        "stat_t": f"{base}/watchdog/feed_count",
+        "state_class": "total_increasing",
+    })
+    add("sensor", "watchdog_last_error", {
+        "name": f"{title} Watchdog Last Error",
+        "uniq_id": f"holiday_{device_name}_watchdog_last_error",
+        "stat_t": f"{base}/watchdog/last_error",
+    })
     add("binary_sensor", "ready", {
         "name": f"{title} Ready", "uniq_id": f"holiday_{device_name}_ready",
         "stat_t": f"{base}/ready", "pl_on": "ON", "pl_off": "OFF",

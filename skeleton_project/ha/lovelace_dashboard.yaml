@@ -78,6 +78,12 @@ views:
           - sensor.skeleton_health
           - sensor.skeleton_health_reasons
           - sensor.skeleton_health_last_update
+          - binary_sensor.skeleton_watchdog_enabled
+          - sensor.skeleton_watchdog_state
+          - sensor.skeleton_controller_heartbeat_age
+          - sensor.skeleton_watchdog_last_feed
+          - sensor.skeleton_watchdog_feed_count
+          - sensor.skeleton_watchdog_last_error
           - sensor.skeleton_cpu_temperature
           - sensor.skeleton_cpu_load_1m
           - sensor.skeleton_memory_use

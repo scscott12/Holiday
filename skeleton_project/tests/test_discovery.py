@@ -153,6 +153,26 @@ class DiscoveryTests(unittest.TestCase):
             "holiday/skeleton/settings/last_error",
         )
 
+    def test_controller_watchdog_state_is_discovered(self):
+        messages = dict(discovery_messages("skeleton"))
+
+        self.assertEqual(
+            messages["homeassistant/binary_sensor/skeleton/watchdog_enabled/config"]["stat_t"],
+            "holiday/skeleton/watchdog/enabled",
+        )
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/watchdog_state/config"]["stat_t"],
+            "holiday/skeleton/watchdog/state",
+        )
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/watchdog_controller_age/config"]["unit_of_measurement"],
+            "s",
+        )
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/watchdog_last_feed/config"]["device_class"],
+            "timestamp",
+        )
+
     def test_health_summary_and_component_attributes_are_discovered(self):
         messages = dict(discovery_messages("skeleton"))
 
