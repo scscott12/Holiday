@@ -83,6 +83,9 @@ pip install paho-mqtt
 - HEALTH_LATENCY_WINDOW=20 controls the recent-turn rolling average/P95 window.
 - CPU temperature, disk use, current throttle flags, Piper availability, and Ollama are evaluated automatically.
 - OLLAMA_HEALTHCHECK_ENABLED=0 disables the periodic /api/tags probe without disabling conversation replies.
+- The packaged systemd unit waits for native READY=1 and restarts a hung controller with WatchdogSec=60.
+- WATCHDOG_CONTROLLER_STALE_SEC=45 controls when the runtime deliberately stops watchdog feeds; keep it below WatchdogSec.
+- Manual `python3 skeleton_all_in_one_mqtt.py` runs report watchdog disabled without affecting other features.
 - EYES_INVERT=1 if your LED driver is active-low.
 - JAW_MIN_US/JAW_MAX_US to set jaw travel.
 - Eyes Dim/Full % and Volume % are "number" controls in HA with box entry.
@@ -135,3 +138,7 @@ sudo journalctl -u holiday-skeleton -f
 # restart the service. Confirm each value returns and settings/state is restored.
 # Confirm /var/lib/holiday-skeleton/operator-settings.json is mode 0600 and does
 # not contain transcripts, recognized visitor text, prompts, or MQTT credentials.
+# Confirm systemctl show holiday-skeleton -p Type -p WatchdogUSec reports notify
+# and 1min. In Home Assistant, Watchdog Enabled should be on, Watchdog State
+# should be ready, Controller Heartbeat Age should stay below 45s, and Feed Count
+# should continue increasing. A manual Python run should instead report disabled.

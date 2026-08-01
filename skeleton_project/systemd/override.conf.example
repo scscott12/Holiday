@@ -52,6 +52,10 @@ Environment="HEALTH_DISK_WARN_PERCENT=90"
 Environment="HEALTH_DISK_CRITICAL_PERCENT=97"
 Environment="OLLAMA_HEALTHCHECK_ENABLED=1"
 
+# systemd restarts the service when the controller stops making progress.
+# Keep this below WatchdogSec in the base service; the runtime also clamps it.
+Environment="WATCHDOG_CONTROLLER_STALE_SEC=45"
+
 Environment="SPEECH_START_TIMEOUT=10.0"
 Environment="END_SILENCE_SEC=0.75"
 Environment="MAX_UTTERANCE_SEC=12.0"

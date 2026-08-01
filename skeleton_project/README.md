@@ -19,6 +19,7 @@ holiday_skeleton/
   scene.py                   validated scene files, cue loading, and bounded runner
   settings.py                atomic non-sensitive operator-state persistence
   speech.py                  warm Piper voice, PCM playback, and jaw envelope
+  watchdog.py                native systemd readiness and hang recovery
   discovery.py               shared Home Assistant MQTT definitions
 tests/                       hardware-free unit tests
 ```
@@ -356,6 +357,14 @@ Configuration:
 - `OLLAMA_HEALTHCHECK_ENABLED`: set to `0` to disable only the periodic `/api/tags` probe.
 
 The monitor uses standard Linux files and the optional Raspberry Pi [`vcgencmd get_throttled`](https://www.raspberrypi.com/documentation/computers/os.html#get_throttled) command, so it adds no Python dependency. Historical throttle flags remain visible even after the immediate condition clears; only current throttle bits degrade health.
+
+## systemd hang recovery
+
+The packaged service uses `Type=notify` and does not become ready until Piper, the canned cache, Ollama, scenes, personalities, and saved settings have completed their startup work. The runtime sends native `READY=1`, `STATUS=...`, `STOPPING=1`, and `WATCHDOG=1` datagrams directly to systemd; no extra Python package is required.
+
+`WatchdogSec=60` is enabled in the base service. A dedicated daemon checks a heartbeat produced by the serialized controller, not the independent health-monitor thread. It feeds systemd only while that controller heartbeat is no more than `WATCHDOG_CONTROLLER_STALE_SEC` old (45 seconds by default). If the controller deadlocks, watchdog feeds stop and the existing `Restart=always` policy replaces the process. Normal bounded listening, Ollama, scene, and speech operations refresh the controller heartbeat; the configured stale limit is clamped below systemd's deadline to prevent an unsafe configuration from defeating recovery.
+
+Home Assistant exposes whether systemd enabled the watchdog, its state, controller-heartbeat age, last successful feed, feed count, and last error. Running the Python script manually has no `NOTIFY_SOCKET` or `WATCHDOG_USEC`, so watchdog state is neutrally `disabled` and all skeleton features continue to work.
 
 ## Checks
 

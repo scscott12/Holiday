@@ -63,10 +63,12 @@ class SkeletonController:
         state_changed: Optional[Callable[[RuntimeState], None]] = None,
         max_queue_size: int = 64,
         idle_handler: Optional[Callable[[threading.Event], None]] = None,
+        heartbeat: Optional[Callable[[RuntimeState], None]] = None,
     ) -> None:
         self._handler = handler
         self._state_changed = state_changed
         self._idle_handler = idle_handler
+        self._heartbeat = heartbeat
         self._queue: queue.Queue[Event] = queue.Queue(maxsize=max_queue_size)
         self._stop_event = threading.Event()
         self._idle_interrupt = threading.Event()
@@ -102,11 +104,21 @@ class SkeletonController:
         self._scene_interrupt.set()
 
     def set_state(self, state: RuntimeState) -> None:
-        if state == self._state:
-            return
-        self._state = state
-        if self._state_changed is not None:
-            self._state_changed(state)
+        changed = state != self._state
+        if changed:
+            self._state = state
+            if self._state_changed is not None:
+                self._state_changed(state)
+        self.heartbeat()
+
+    def heartbeat(self) -> None:
+        """Report progress without allowing watchdog failures to stop work."""
+
+        if self._heartbeat is not None:
+            try:
+                self._heartbeat(self._state)
+            except Exception:
+                pass
 
     def enqueue(
         self,
@@ -155,6 +167,7 @@ class SkeletonController:
     def run_forever(self) -> None:
         self.set_state(RuntimeState.IDLE)
         while not self._stop_event.is_set():
+            self.heartbeat()
             if self._state is RuntimeState.IDLE:
                 self._idle_interrupt.clear()
             try:
@@ -167,7 +180,9 @@ class SkeletonController:
                     and not self._stop_event.is_set()
                 ):
                     try:
+                        self.heartbeat()
                         self._idle_handler(self._idle_interrupt)
+                        self.heartbeat()
                     except Exception:
                         self.set_state(RuntimeState.ERROR)
                         raise
@@ -186,7 +201,9 @@ class SkeletonController:
                     self._scene_interrupt.set()
 
             try:
+                self.heartbeat()
                 self._handler(event)
+                self.heartbeat()
             except Exception:
                 self.set_state(RuntimeState.ERROR)
                 raise
