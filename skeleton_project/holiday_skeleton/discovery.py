@@ -38,6 +38,41 @@ def discovery_messages(device_name: str) -> List[DiscoveryMessage]:
         "name": f"{title} Speaking", "uniq_id": f"holiday_{device_name}_speaking",
         "stat_t": f"{base}/speaking", "pl_on": "ON", "pl_off": "OFF",
     })
+    add("binary_sensor", "barge_in_enabled", {
+        "name": f"{title} Barge-In Enabled",
+        "uniq_id": f"holiday_{device_name}_barge_in_enabled",
+        "stat_t": f"{base}/barge_in/enabled", "pl_on": "ON", "pl_off": "OFF",
+    })
+    add("binary_sensor", "barge_in_active", {
+        "name": f"{title} Barge-In Listening",
+        "uniq_id": f"holiday_{device_name}_barge_in_active",
+        "stat_t": f"{base}/barge_in/active", "pl_on": "ON", "pl_off": "OFF",
+    })
+    add("sensor", "barge_in_state", {
+        "name": f"{title} Barge-In State",
+        "uniq_id": f"holiday_{device_name}_barge_in_state",
+        "stat_t": f"{base}/barge_in/state",
+    })
+    add("sensor", "barge_in_last_command", {
+        "name": f"{title} Last Barge-In Command",
+        "uniq_id": f"holiday_{device_name}_barge_in_last_command",
+        "stat_t": f"{base}/barge_in/last_command",
+    })
+    add("sensor", "barge_in_last_action", {
+        "name": f"{title} Last Barge-In Action",
+        "uniq_id": f"holiday_{device_name}_barge_in_last_action",
+        "stat_t": f"{base}/barge_in/last_action",
+    })
+    add("sensor", "barge_in_latency", {
+        "name": f"{title} Barge-In Latency",
+        "uniq_id": f"holiday_{device_name}_barge_in_latency",
+        "stat_t": f"{base}/barge_in/latency", "unit_of_measurement": "s",
+    })
+    add("sensor", "barge_in_count", {
+        "name": f"{title} Barge-In Count",
+        "uniq_id": f"holiday_{device_name}_barge_in_count",
+        "stat_t": f"{base}/barge_in/count",
+    })
     add("binary_sensor", "ready", {
         "name": f"{title} Ready", "uniq_id": f"holiday_{device_name}_ready",
         "stat_t": f"{base}/ready", "pl_on": "ON", "pl_off": "OFF",

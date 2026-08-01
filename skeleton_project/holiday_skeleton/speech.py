@@ -320,6 +320,7 @@ class PiperSpeechEngine:
         phrases: Iterable[str],
         stop_event: Optional[threading.Event] = None,
         first_audio: Optional[Callable[[float], None]] = None,
+        phrase_started: Optional[Callable[[str], None]] = None,
     ) -> SpeechMetrics:
         """Play phrases as they arrive while keeping one output stream open.
 
@@ -351,6 +352,8 @@ class PiperSpeechEngine:
 
                     phrase_started_at = self.clock()
                     phrase_audio_started = False
+                    if phrase_started is not None:
+                        phrase_started(text)
                     cached = self._cache.get(self._cache_key(text))
                     if cached is not None:
                         cached_phrases += 1

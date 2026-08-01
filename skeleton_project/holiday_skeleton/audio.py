@@ -9,6 +9,46 @@ from typing import Deque, Optional
 import numpy as np
 
 
+def resample_linear_int16(
+    samples: np.ndarray,
+    source_rate: int,
+    target_rate: int,
+    state: dict,
+) -> np.ndarray:
+    """Resample a stream of mono int16 blocks while retaining edge state."""
+
+    samples = np.asarray(samples, dtype=np.int16)
+    if source_rate == target_rate or samples.size == 0:
+        return samples
+
+    previous = state.get("previous", np.zeros(0, dtype=np.int16))
+    combined = np.concatenate((previous, samples))
+    if combined.size < 2:
+        state["previous"] = combined
+        return np.zeros(0, dtype=np.int16)
+
+    ratio = target_rate / float(source_rate)
+    phase = float(state.get("phase", 0.0))
+    output_length = int(np.floor((len(combined) - 1 - phase) * ratio))
+    if output_length <= 0:
+        state["previous"] = combined
+        state["phase"] = phase
+        return np.zeros(0, dtype=np.int16)
+
+    positions = phase + np.arange(output_length) / ratio
+    lower = np.floor(positions).astype(np.int32)
+    upper = np.clip(lower + 1, 0, len(combined) - 1)
+    fraction = (positions - lower).astype(np.float32)
+    output = (
+        combined[lower].astype(np.float32) * (1.0 - fraction)
+        + combined[upper].astype(np.float32) * fraction
+    )
+    output = np.clip(np.round(output), -32768, 32767).astype(np.int16)
+    state["previous"] = combined[lower[-1] + 1 :]
+    state["phase"] = positions[-1] - lower[-1]
+    return output
+
+
 @dataclass(frozen=True)
 class GateResult:
     """Audio that should be sent to Vosk for one microphone block."""
@@ -74,4 +114,3 @@ class SpeechGate:
             and self._last_voice_at is not None
             and now - self._last_voice_at >= self.end_silence_seconds
         )
-

@@ -139,6 +139,17 @@ class PiperSpeechEngineTests(unittest.TestCase):
         self.assertEqual(len(first_audio), 1)
         self.assertEqual(self.audio.stream.started, 2)
 
+    def test_phrase_callback_reports_each_played_phrase(self):
+        engine = self.make_engine([FakeChunk(np.full(20, 1000))])
+        events = []
+
+        engine.speak_phrases(
+            ["First phrase.", "Second phrase."],
+            phrase_started=events.append,
+        )
+
+        self.assertEqual(events, ["First phrase.", "Second phrase."])
+
     def test_warm_up_materializes_audio_without_playing_it(self):
         engine = self.make_engine([FakeChunk(np.full(20, 1000))])
 

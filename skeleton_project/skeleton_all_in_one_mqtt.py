@@ -5,7 +5,13 @@ import os, time, json, queue, subprocess, random, threading, re, wave, signal
 from datetime import datetime
 import numpy as np
 
-from holiday_skeleton.audio import SpeechGate
+from holiday_skeleton.audio import SpeechGate, resample_linear_int16
+from holiday_skeleton.barge_in import (
+    AnyStopEvent,
+    BargeInAction,
+    BargeInMatcher,
+    BargeInMonitor,
+)
 from holiday_skeleton.brain import (
     ConversationMemory,
     OllamaStreamingClient,
@@ -43,6 +49,13 @@ def clamp(x, lo, hi):
         return lo
 
 def envs(k, d): v=os.getenv(k); return v if v is not None else d
+
+def env_words(k, default):
+    return tuple(
+        word.strip()
+        for word in envs(k, default).split(",")
+        if word.strip()
+    )
 
 USER_HOME    = envs("HOME", "/home/pi")
 DEVICE_NAME  = envs("DEVICE_NAME", "skeleton")
@@ -88,6 +101,16 @@ SPEECH_START_TIMEOUT = float(envs("SPEECH_START_TIMEOUT",str(NO_SPEECH_TIMEOUT))
 MIN_VOICED_SEC   = float(envs("MIN_VOICED_SEC","0.16"))
 END_SILENCE_SEC  = float(envs("END_SILENCE_SEC","0.75"))
 MAX_UTTERANCE_SEC= float(envs("MAX_UTTERANCE_SEC","12.0"))
+
+BARGE_IN_ENABLED = envs("BARGE_IN_ENABLED","1").strip().lower() in ("1","true","yes","on")
+BARGE_IN_STOP_COMMANDS = env_words("BARGE_IN_STOP_COMMANDS","stop,quiet")
+BARGE_IN_LISTEN_COMMANDS = env_words("BARGE_IN_LISTEN_COMMANDS","wait")
+BARGE_IN_WAKE_WORDS = env_words("BARGE_IN_WAKE_WORDS",DEVICE_NAME.replace("_"," "))
+BARGE_IN_ENERGY_GATE = float(envs("BARGE_IN_ENERGY_GATE","320"))
+BARGE_IN_MIN_VOICED_SEC = float(envs("BARGE_IN_MIN_VOICED_SEC","0.10"))
+BARGE_IN_PARTIAL_CONFIRMATIONS = int(envs("BARGE_IN_PARTIAL_CONFIRMATIONS","2"))
+BARGE_IN_CAPTURE_RATE = int(envs("BARGE_IN_CAPTURE_RATE","44100"))
+BARGE_IN_REQUIRE_WAKE_WORD = envs("BARGE_IN_REQUIRE_WAKE_WORD","0").strip().lower() in ("1","true","yes","on")
 
 OLLAMA_URL   = normalize_ollama_chat_url(envs("OLLAMA_CHAT_URL",envs("OLLAMA_URL","http://127.0.0.1:11434/api/chat")))
 OLLAMA_MODEL = envs("OLLAMA_MODEL","qwen2.5:0.5b")
@@ -352,6 +375,89 @@ def speak_wav_play(path:str):
 _speech_lock=threading.Lock()
 _speech_engine=None
 _llm_client=None
+_barge_in_count=0
+_barge_in_matcher=BargeInMatcher(
+    stop_commands=BARGE_IN_STOP_COMMANDS,
+    listen_commands=BARGE_IN_LISTEN_COMMANDS,
+    wake_words=BARGE_IN_WAKE_WORDS,
+    require_wake_word=BARGE_IN_REQUIRE_WAKE_WORD,
+)
+
+def _barge_in_supported():
+    return bool(
+        BARGE_IN_ENABLED
+        and _speech_engine is not None
+        and stt_enabled
+        and sd is not None
+        and vosk is not None
+        and _VOSK_MODEL is not None
+        and in_idx is not None
+    )
+
+def _publish_barge_in_capability():
+    if _barge_in_supported():
+        state="ready"
+    elif not BARGE_IN_ENABLED:
+        state="disabled"
+    elif _speech_engine is None:
+        state="legacy_tts"
+    elif not stt_enabled or in_idx is None:
+        state="no_microphone"
+    else:
+        state="unavailable"
+    mqtt_pub("barge_in/enabled","ON" if state == "ready" else "OFF",retain=True)
+    mqtt_pub("barge_in/active","OFF",retain=True)
+    mqtt_pub("barge_in/state",state,retain=True)
+    mqtt_pub("barge_in/count",str(_barge_in_count),retain=True)
+
+def _start_barge_in_monitor():
+    if not _barge_in_supported(): return None
+
+    def recognizer_factory(grammar_json):
+        recognizer=vosk.KaldiRecognizer(_VOSK_MODEL,VOSK_RATE,grammar_json)
+        try: recognizer.SetWords(False)
+        except Exception: pass
+        return recognizer
+
+    monitor=BargeInMonitor(
+        audio_module=sd,
+        recognizer_factory=recognizer_factory,
+        matcher=_barge_in_matcher,
+        input_device=in_idx,
+        capture_rate=BARGE_IN_CAPTURE_RATE,
+        recognition_rate=VOSK_RATE,
+        blocksize=SD_BLOCKSIZE,
+        energy_threshold=BARGE_IN_ENERGY_GATE,
+        minimum_voiced_seconds=BARGE_IN_MIN_VOICED_SEC,
+        partial_confirmations=BARGE_IN_PARTIAL_CONFIRMATIONS,
+        parent_stop_event=controller.stop_event if controller is not None else None,
+    ).start()
+    mqtt_pub("barge_in/active","ON")
+    mqtt_pub("barge_in/state","listening")
+    return monitor
+
+def _finish_barge_in_monitor(monitor):
+    global _barge_in_count
+    if monitor is None: return None
+    result=monitor.stop()
+    mqtt_pub("barge_in/active","OFF")
+    if monitor.error:
+        print(f"[barge-in] microphone monitor failed: {monitor.error}")
+        mqtt_pub("barge_in/state","error")
+    else:
+        mqtt_pub("barge_in/state","ready")
+    if result is not None:
+        _barge_in_count+=1
+        _transcript_add("command",result.transcript)
+        mqtt_pub("barge_in/last_command",result.transcript)
+        mqtt_pub("barge_in/last_action",result.action.value)
+        mqtt_pub("barge_in/latency",f"{result.detected_seconds:.3f}")
+        mqtt_pub("barge_in/count",str(_barge_in_count))
+        print(
+            f"[barge-in] {result.transcript!r} -> {result.action.value} "
+            f"in {result.detected_seconds:.3f}s"
+        )
+    return result
 
 def _legacy_speak_with_jaw(text:str):
     """Compatibility path for installs that have not added piper-tts yet."""
@@ -373,6 +479,7 @@ def speak_phrases_with_jaw(phrases,first_audio=None,abort=None):
     """Speak an iterable without releasing the output stream between phrases."""
     speaking=False
     seen=[]
+    barge_result=None
 
     def report_first_audio(seconds):
         mqtt_pub("tts/first_audio",f"{seconds:.3f}")
@@ -394,24 +501,47 @@ def speak_phrases_with_jaw(phrases,first_audio=None,abort=None):
         marked=marked_phrases()
         try:
             if _speech_engine is not None:
+                monitor=_start_barge_in_monitor()
+                metrics=None
+                streaming_complete=False
+                streaming_aborted=False
                 try:
+                    stop_signal=AnyStopEvent(
+                        controller.stop_event if controller is not None else None,
+                        monitor.interrupt_event if monitor is not None else None,
+                    )
                     metrics=_speech_engine.speak_phrases(
                         marked,
-                        stop_event=controller.stop_event if controller is not None else None,
+                        stop_event=stop_signal,
                         first_audio=report_first_audio,
+                        phrase_started=(
+                            monitor.set_expected_speech if monitor is not None else None
+                        ),
                     )
-                    mqtt_pub("tts/speak_time",f"{metrics.total_seconds:.3f}")
-                    mqtt_pub("tts/audio_time",f"{metrics.audio_seconds:.3f}")
-                    mqtt_pub("tts/cache_hit","ON" if metrics.cached_phrases else "OFF")
-                    return metrics
+                    streaming_complete=True
                 except SpeechEngineError as e:
                     print("[TTS streaming]",e)
                     if e.audio_started or (controller is not None and controller.stop_event.is_set()):
                         if abort is not None: abort()
-                        return
-                    mqtt_pub("tts/cache_hit","OFF")
-                    for phrase in seen:
-                        _legacy_speak_with_jaw(phrase)
+                        streaming_aborted=True
+                finally:
+                    if monitor is not None:
+                        barge_result=_finish_barge_in_monitor(monitor)
+
+                if streaming_aborted:
+                    return barge_result
+                if streaming_complete:
+                    mqtt_pub("tts/speak_time",f"{metrics.total_seconds:.3f}")
+                    mqtt_pub("tts/audio_time",f"{metrics.audio_seconds:.3f}")
+                    mqtt_pub("tts/cache_hit","ON" if metrics.cached_phrases else "OFF")
+                    if metrics.interrupted and abort is not None: abort()
+                    return barge_result
+                if barge_result is not None:
+                    if abort is not None: abort()
+                    return barge_result
+                mqtt_pub("tts/cache_hit","OFF")
+                for phrase in seen:
+                    _legacy_speak_with_jaw(phrase)
             mqtt_pub("tts/cache_hit","OFF")
             for phrase in marked:
                 _legacy_speak_with_jaw(phrase)
@@ -435,12 +565,11 @@ def _publish_llm_metrics(result):
 def _publish_memory_turns(memory):
     mqtt_pub("llm/memory_turns",str(memory.turn_count if memory is not None else 0))
 
-def stream_llm_reply(user_text:str,memory=None)->str:
+def stream_llm_reply(user_text:str,memory=None):
     fallback="Arrr, I be old and forgetful — say it again, matey!"
     if _llm_client is None:
         controller.set_state(RuntimeState.SPEAKING)
-        speak_with_jaw(fallback)
-        return fallback
+        return fallback,speak_with_jaw(fallback)
 
     history=memory.messages() if memory is not None else None
     reply=_llm_client.start_reply(user_text,controller.stop_event,history=history)
@@ -457,7 +586,7 @@ def stream_llm_reply(user_text:str,memory=None)->str:
         mqtt_pub("llm/first_audio",f"{time.monotonic()-reply.started_at:.3f}")
 
     try:
-        speak_phrases_with_jaw(
+        barge_result=speak_phrases_with_jaw(
             phrases(),
             first_audio=first_audio_started,
             abort=reply.cancel,
@@ -465,6 +594,7 @@ def stream_llm_reply(user_text:str,memory=None)->str:
     except Exception as e:
         print("[LLM speech pipeline]",e)
         reply.cancel()
+        barge_result=None
 
     result=reply.result or reply.wait(timeout=0.25)
     _publish_llm_metrics(result)
@@ -473,17 +603,22 @@ def stream_llm_reply(user_text:str,memory=None)->str:
 
     if controller.stop_event.is_set():
         reply.cancel()
-        return result.text if result is not None else ""
+        return (result.text if result is not None else ""),barge_result
+
+    if barge_result is not None:
+        reply.cancel()
+        result=reply.result or reply.wait(timeout=0.25)
+        completed=(result.text if result is not None else " ".join(delivered)).strip()
+        return completed,barge_result
 
     if not delivered:
         controller.set_state(RuntimeState.SPEAKING)
-        speak_with_jaw(fallback)
-        return fallback
+        return fallback,speak_with_jaw(fallback)
 
     completed=(result.text if result is not None else " ".join(delivered)).strip()
     if memory is not None and memory.remember_reply(user_text,result):
         _publish_memory_turns(memory)
-    return completed
+    return completed,None
 
 stt_enabled=True; _VOSK_MODEL=None
 if vosk is None:
@@ -506,20 +641,6 @@ in_idx,in_name=pick_input_device()
 if in_idx is None: stt_enabled=False; print("[audio] listening disabled (no input device)")
 else: print(f"Mic selected: {in_name}")
 
-def resample_linear_int16(chunk_i16:np.ndarray,src_hz:int,dst_hz:int,state:dict)->np.ndarray:
-    if src_hz==dst_hz or chunk_i16.size==0: return chunk_i16
-    prev=state.get("prev",np.zeros(0,np.int16)); x=np.concatenate([prev,chunk_i16])
-    if x.size<2: state["prev"]=x; return np.zeros(0,np.int16)
-    ratio=dst_hz/float(src_hz); phase=state.get("phase",0.0)
-    out_len=int(np.floor((len(x)-1-phase)*ratio))
-    if out_len<=0: state["prev"]=x; state["phase"]=phase; return np.zeros(0,np.int16)
-    idx=phase+np.arange(out_len)/ratio
-    i0=np.floor(idx).astype(np.int32); i1=np.clip(i0+1,0,len(x)-1)
-    frac=(idx-i0).astype(np.float32)
-    y=x[i0].astype(np.float32)*(1.0-frac)+x[i1].astype(np.float32)*frac
-    y=np.clip(np.round(y),-32768,32767).astype(np.int16)
-    state["prev"]=x[i0[-1]+1:]; state["phase"]=idx[-1]-i0[-1]; return y
-
 def _recognized_text(result_json):
     try:
         txt=(json.loads(result_json).get("text") or "").strip()
@@ -530,7 +651,7 @@ def _recognized_text(result_json):
 def record_once(input_index:int,capture_rate:int,timeout_s:float,stop_event=None)->str:
     if not stt_enabled or sd is None or _VOSK_MODEL is None: return ""
     rec=vosk.KaldiRecognizer(_VOSK_MODEL,VOSK_RATE); rec.SetWords(True)
-    q=queue.Queue(maxsize=128); rs_state={"prev":np.zeros(0,np.int16),"phase":0.0}
+    q=queue.Queue(maxsize=128); rs_state={"previous":np.zeros(0,np.int16),"phase":0.0}
     gate=SpeechGate(
         sample_rate=VOSK_RATE,
         energy_threshold=ENERGY_GATE,
@@ -797,7 +918,10 @@ def _say_goodbye():
     gb=random.choice(GOODBYE_LINES) if GOODBYE_LINES else "Goodbye."
     _transcript_add("assistant",gb)
     controller.set_state(RuntimeState.SPEAKING)
-    speak_with_jaw(gb)
+    return speak_with_jaw(gb)
+
+def _barge_in_ends_visit(result):
+    return bool(result is not None and result.action is BargeInAction.END_VISIT)
 
 def _conversation_loop(memory):
     while not controller.stop_event.is_set():
@@ -815,9 +939,10 @@ def _conversation_loop(memory):
         if EXIT_RE.search(text):
             _say_goodbye(); return
         controller.set_state(RuntimeState.THINKING)
-        reply=stream_llm_reply(text,memory)
+        reply,barge_result=stream_llm_reply(text,memory)
         if controller.stop_event.is_set(): return
-        _transcript_add("assistant",reply)
+        if reply: _transcript_add("assistant",reply)
+        if _barge_in_ends_visit(barge_result): return
 
 _last_talk=0.0
 def _manual_trigger():
@@ -835,14 +960,15 @@ def _manual_trigger():
         _transcript_add("assistant",opener)
         controller.set_state(RuntimeState.GREETING)
         greeting_started=time.monotonic()
-        speak_with_jaw(
+        barge_result=speak_with_jaw(
             opener,
             first_audio=lambda _seconds: mqtt_pub(
                 "tts/greeting_first_audio",
                 f"{time.monotonic()-greeting_started:.3f}",
             ),
         )
-        _conversation_loop(memory)
+        if not _barge_in_ends_visit(barge_result):
+            _conversation_loop(memory)
     finally:
         if memory is not None: memory.clear()
         _publish_memory_turns(None)
@@ -898,6 +1024,8 @@ def _cleanup():
     except Exception: pass
     try: mqtt_pub("ready","OFF",retain=True)
     except Exception: pass
+    try: mqtt_pub("barge_in/active","OFF",retain=True)
+    except Exception: pass
     try: mqtt_pub("availability","offline",retain=True)
     except Exception: pass
     try: _jaw_set(JAW_REST_FRAC)
@@ -925,6 +1053,7 @@ def main():
     _init_speech_engine()
     _init_llm_client()
     _warm_ollama()
+    _publish_barge_in_capability()
     _runtime_ready=True
     mqtt_pub("ready","ON",retain=True)
     print("👀 Waiting for motion or MQTT commands…")

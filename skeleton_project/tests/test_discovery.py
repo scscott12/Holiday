@@ -63,6 +63,22 @@ class DiscoveryTests(unittest.TestCase):
             "holiday/skeleton/llm/memory_turns",
         )
 
+    def test_barge_in_state_and_metrics_are_discovered(self):
+        messages = dict(discovery_messages("skeleton"))
+
+        self.assertEqual(
+            messages["homeassistant/binary_sensor/skeleton/barge_in_enabled/config"]["stat_t"],
+            "holiday/skeleton/barge_in/enabled",
+        )
+        self.assertEqual(
+            messages["homeassistant/binary_sensor/skeleton/barge_in_active/config"]["stat_t"],
+            "holiday/skeleton/barge_in/active",
+        )
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/barge_in_latency/config"]["stat_t"],
+            "holiday/skeleton/barge_in/latency",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

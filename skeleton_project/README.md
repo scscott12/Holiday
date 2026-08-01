@@ -11,6 +11,7 @@ skeleton_all_in_one_mqtt.py  service composition and hardware integrations
 holiday_skeleton/
   controller.py              event queue and runtime states
   audio.py                   preroll, speech gate, and endpoint timing
+  barge_in.py                echo-aware interruption command monitor
   brain.py                   Ollama stream producer and phrase assembly
   speech.py                  warm Piper voice, PCM playback, and jaw envelope
   discovery.py               shared Home Assistant MQTT definitions
@@ -104,6 +105,12 @@ Environment="PIR_PIN=17"
 Environment="SPEECH_START_TIMEOUT=10.0"
 Environment="END_SILENCE_SEC=0.75"
 Environment="MAX_UTTERANCE_SEC=12.0"
+Environment="BARGE_IN_ENABLED=1"
+Environment="BARGE_IN_STOP_COMMANDS=stop,quiet"
+Environment="BARGE_IN_LISTEN_COMMANDS=wait"
+Environment="BARGE_IN_WAKE_WORDS=skeleton"
+Environment="BARGE_IN_ENERGY_GATE=320"
+Environment="BARGE_IN_REQUIRE_WAKE_WORD=0"
 Environment="AUDIO_OUTPUT_DEVICE="
 Environment="TTS_FRAME_MS=20"
 Environment="TTS_CANNED_CACHE=1"
@@ -179,6 +186,20 @@ The default is three exchanges with a 512-token context window. Set `LLM_MEMORY_
 Only successful, uninterrupted Ollama replies enter memory. The entire session is cleared on goodbye, listening timeout, shutdown, or completion of the visit; it is never written to disk or shared with the next visitor. Home Assistant's `sensor.skeleton_memory_turns` shows the number of retained exchanges during the active visit and returns to zero when it ends.
 
 `OLLAMA_CHAT_URL` may override the default `http://127.0.0.1:11434/api/chat`. Existing `OLLAMA_URL` settings ending in `/api/generate` are translated to `/api/chat` automatically for upgrade compatibility.
+
+## Barge-in commands
+
+While the streaming Piper engine is speaking, a second command-only Vosk recognizer listens for a small constrained grammar. It does not send arbitrary background speech to Ollama:
+
+- `stop` or `quiet` interrupts within one PCM frame and ends the current visit without another goodbye.
+- `wait` or the configured wake name interrupts speech and returns immediately to normal visitor listening.
+- `skeleton stop`, `hey skeleton`, and polite variants are included automatically.
+
+The recognizer requires the same command in two consecutive partial results by default, uses a higher energy gate than normal conversation, and ignores a command when that exact wording appears in the phrase currently coming from the speaker. These safeguards reduce self-echo false triggers without adding a cloud service or a second speech model.
+
+Set `BARGE_IN_ENABLED=0` to disable the feature. Command and wake-word lists are comma-separated. `BARGE_IN_WAKE_WORDS` defaults to `DEVICE_NAME`, so change it if the character has a more natural spoken name. If nearby speaker audio causes false interruptions, first raise `BARGE_IN_ENERGY_GATE` in increments of 50. Set `BARGE_IN_REQUIRE_WAKE_WORD=1` to reject bare commands and require forms such as `skeleton stop`; the wake name by itself still returns to listening.
+
+Barge-in requires the warm streaming Piper path because the legacy WAV player cannot be stopped safely mid-file. Home Assistant reports `ready`, `listening`, `disabled`, `legacy_tts`, `no_microphone`, or `error`, along with the last command, selected action, detection latency, and count. A microphone/full-duplex audio error affects only barge-in; normal speech continues and the next utterance retries the monitor.
 
 ## Checks
 
