@@ -15,3 +15,7 @@ Environment="JAW_MAX_US=1000"
 Environment="PIR_PIN=17"
 Environment="EYES_CH=4"
 Environment="JAW_CH=0"
+
+Environment="SPEECH_START_TIMEOUT=10.0"
+Environment="END_SILENCE_SEC=0.75"
+Environment="MAX_UTTERANCE_SEC=12.0"

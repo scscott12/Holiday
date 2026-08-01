@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Holiday Skeleton — ONE-FILE service (HA-ready)
-See INSTALL.txt for setup and README.md for overview.
-"""
-import os, sys, time, json, queue, subprocess, collections, random, threading, re, wave, signal
+"""Holiday Skeleton single-process runtime (Home Assistant ready)."""
+import os, time, json, queue, subprocess, random, threading, re, wave, signal
 from datetime import datetime
 import numpy as np
+
+from holiday_skeleton.audio import SpeechGate
+from holiday_skeleton.controller import EventKind, RuntimeState, SkeletonController
+from holiday_skeleton.discovery import discovery_messages
 
 def _safe_im(name, sub=None):
     try:
@@ -37,7 +38,7 @@ def clamp(x, lo, hi):
 
 def envs(k, d): v=os.getenv(k); return v if v is not None else d
 
-HOME         = envs("HOME", "/home/pi")
+USER_HOME    = envs("HOME", "/home/pi")
 DEVICE_NAME  = envs("DEVICE_NAME", "skeleton")
 MQTT_HOST    = envs("MQTT_HOST", "<ipAddress>")
 MQTT_PORT    = int(envs("MQTT_PORT", "1883"))
@@ -45,9 +46,9 @@ MQTT_USER    = envs("MQTT_USER", "<Username>")
 MQTT_PASS    = envs("MQTT_PASS", "")
 MQTT_BASE    = f"holiday/{DEVICE_NAME}"
 
-MODEL_PATH   = envs("MODEL_PATH", f"{HOME}/models/vosk-en")
-PIPER_BIN    = envs("PIPER_BIN",  f"{HOME}/bin/piper/piper")
-PIPER_MODEL  = envs("PIPER_MODEL",f"{HOME}/piper/en-gb-alan-low.onnx")
+MODEL_PATH   = envs("MODEL_PATH", f"{USER_HOME}/models/vosk-en")
+PIPER_BIN    = envs("PIPER_BIN",  f"{USER_HOME}/bin/piper/piper")
+PIPER_MODEL  = envs("PIPER_MODEL",f"{USER_HOME}/piper/en-gb-alan-low.onnx")
 TTS_WAV      = envs("TTS_WAV", "/tmp/tts.wav")
 
 PCA_FREQ     = int(envs("PCA_FREQ","50"))
@@ -73,6 +74,10 @@ ENERGY_GATE      = float(envs("ENERGY_GATE","180"))
 MIN_TEXT_LEN     = int(envs("MIN_TEXT_LEN","2"))
 PREROLL_SEC      = float(envs("PREROLL_SEC","0.5"))
 NO_SPEECH_TIMEOUT= float(envs("NO_SPEECH_TIMEOUT","10.0"))
+SPEECH_START_TIMEOUT = float(envs("SPEECH_START_TIMEOUT",str(NO_SPEECH_TIMEOUT)))
+MIN_VOICED_SEC   = float(envs("MIN_VOICED_SEC","0.16"))
+END_SILENCE_SEC  = float(envs("END_SILENCE_SEC","0.75"))
+MAX_UTTERANCE_SEC= float(envs("MAX_UTTERANCE_SEC","12.0"))
 
 OLLAMA_URL   = envs("OLLAMA_URL","http://127.0.0.1:11434/api/generate")
 OLLAMA_MODEL = envs("OLLAMA_MODEL","qwen2.5:0.5b")
@@ -148,6 +153,8 @@ def _make_mqtt_client():
 
 mqttc=_make_mqtt_client()
 _mqtt_connected=False
+controller=None
+
 def mqtt_pub(topic,payload,retain=False):
     try:
         if mqttc: mqttc.publish(f"{MQTT_BASE}/{topic}",payload,retain=retain)
@@ -156,40 +163,49 @@ def mqtt_pub_abs(topic,payload,retain=False):
     try:
         if mqttc: mqttc.publish(topic,payload,retain=retain)
     except Exception: pass
-    mqtt_pub(topic,payload,retain)
+
+def _enqueue(kind,payload=None,source="mqtt"):
+    if controller is None:
+        print(f"[controller] dropped {kind.value}; runtime not ready")
+        return False
+    accepted=controller.enqueue(kind,payload,source)
+    if not accepted:
+        print(f"[controller] coalesced or dropped {kind.value} from {source}")
+    return accepted
 
 def _on_message(client,userdata,msg):
     t=msg.topic; p=msg.payload.decode("utf-8","ignore").strip()
     if t.endswith("/say/set"):
-        _transcript_add("assistant",p); threading.Thread(target=lambda:speak_with_jaw(p),daemon=True).start(); return
-    if t.endswith("/motion/trigger/set"): _manual_trigger(); return
+        if p: _enqueue(EventKind.SAY,p)
+        return
+    if t.endswith("/motion/trigger/set"): _enqueue(EventKind.TRIGGER,source="mqtt"); return
     if t.endswith("/eyes/dim/set"):
-        try: v=float(p); v=v/100.0 if v>1.0 else v; _set_eyes_dim(v)
+        try: v=float(p); v=v/100.0 if v>1.0 else v; _enqueue(EventKind.SET_EYES_DIM,v)
         except: pass; return
     if t.endswith("/eyes/full/set"):
-        try: v=float(p); v=v/100.0 if v>1.0 else v; _set_eyes_full(v)
+        try: v=float(p); v=v/100.0 if v>1.0 else v; _enqueue(EventKind.SET_EYES_FULL,v)
         except: pass; return
-    if t.endswith("/blink/set"): eyes_blink(6,120); return
-    if t.endswith("/flicker/set"): eyes_flicker(5.0,0.2,0.7,60); return
+    if t.endswith("/blink/set"): _enqueue(EventKind.BLINK); return
+    if t.endswith("/flicker/set"): _enqueue(EventKind.FLICKER); return
     if t.endswith("/volume/set"):
-        try: v=float(p); v=v/100.0 if v>2.0 else v; _set_volume(v)
+        try: v=float(p); v=v/100.0 if v>2.0 else v; _enqueue(EventKind.SET_VOLUME,v)
         except: pass; return
-    if t.endswith("/motion/enabled/set"): _set_motion_enabled(p); return
-    if t.endswith("/night_mode/set"): _toggle_night_mode(p); return
-    if t.endswith("/restart/set"): mqtt_pub("availability","offline",retain=True); time.sleep(0.2); os._exit(0)
+    if t.endswith("/motion/enabled/set"): _enqueue(EventKind.SET_MOTION_ENABLED,p); return
+    if t.endswith("/night_mode/set"): _enqueue(EventKind.SET_NIGHT_MODE,p); return
+    if t.endswith("/restart/set"): _enqueue(EventKind.RESTART); return
 
 def _on_connect(client,userdata,flags,rc,properties=None):
     global _mqtt_connected; _mqtt_connected=(rc==0)
     print(f"[mqtt] on_connect rc={rc}")
     if _mqtt_connected:
-        mqtt_pub("availability","online",retain=True); mqtt_pub("status","idle",retain=True)
+        mqtt_pub("availability","online",retain=True); mqtt_pub("status","starting",retain=True)
         publish_mqtt_discovery()
         subs=["say/set","eyes/dim/set","eyes/full/set","blink/set","flicker/set","volume/set",
               "motion/trigger/set","motion/enabled/set","night_mode/set","restart/set"]
         for path in subs:
             try: client.subscribe(f"{MQTT_BASE}/{path}")
             except Exception as e: print("[mqtt subscribe]",e)
-        mqtt_pub("ready","ON"); eyes_off()
+        mqtt_pub("ready","ON")
 
 def _on_disconnect(client,userdata,rc,properties=None):
     global _mqtt_connected; _mqtt_connected=False
@@ -232,7 +248,7 @@ def eyes_idle():   _stop_eyes_effect(); eyes_set(EYES_IDLE_FRAC)
 def eyes_listen(): _stop_eyes_effect(); eyes_set(EYES_LISTEN_FRAC)
 def eyes_speak():  _stop_eyes_effect(); eyes_set(EYES_SPEAK_FRAC)
 
-def eyes_blink(count=6, period_ms=120, low=0.0, high=None):
+def eyes_blink(count=6, period_ms=120, low=0.0, high=None, blocking=False):
     global _eyes_effect_thread,_eyes_effect_stop
     _stop_eyes_effect(); high = EYES_SPEAK_FRAC if high is None else clamp(high,0,1)
     def run():
@@ -240,17 +256,19 @@ def eyes_blink(count=6, period_ms=120, low=0.0, high=None):
             if _eyes_effect_stop.is_set(): break
             eyes_set(high); time.sleep(max(0.01, period_ms/1000.0/2))
             eyes_set(low);  time.sleep(max(0.01, period_ms/1000.0/2))
-        eyes_idle()
+        eyes_set(EYES_IDLE_FRAC)
     _eyes_effect_thread=threading.Thread(target=run,daemon=True); _eyes_effect_thread.start()
+    if blocking: _eyes_effect_thread.join()
 
-def eyes_flicker(duration_s=5.0, base=0.2, span=0.7, step_ms=60):
+def eyes_flicker(duration_s=5.0, base=0.2, span=0.7, step_ms=60, blocking=False):
     global _eyes_effect_thread,_eyes_effect_stop
     _stop_eyes_effect(); base=clamp(base,0,1); span=clamp(span,0,1-base); start=time.time()
     def run():
         while time.time()-start<duration_s and not _eyes_effect_stop.is_set():
             eyes_set(base+random.random()*span); time.sleep(max(0.02, step_ms/1000.0))
-        eyes_idle()
+        eyes_set(EYES_IDLE_FRAC)
     _eyes_effect_thread=threading.Thread(target=run,daemon=True); _eyes_effect_thread.start()
+    if blocking: _eyes_effect_thread.join()
 
 def _jaw_set(frac:float):
     try:
@@ -300,27 +318,34 @@ def speak_wav_play(path:str):
     try: subprocess.run(["aplay","-q",path],check=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     except Exception as e: print("[aplay]",e)
 
+_speech_lock=threading.Lock()
+
 def speak_with_jaw(text:str):
     if not text: return
-    try:
-        p=subprocess.Popen([PIPER_BIN,"-m",PIPER_MODEL,"-f",TTS_WAV,"-q"],stdin=subprocess.PIPE,text=True,
-                           stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        p.communicate(input=text)
-    except Exception as e:
-        print("[TTS]",e); eyes_speak(); jaw_chatter_fallback(text); eyes_off(); return
-    _amplify_wav_inplace(TTS_WAV,VOLUME)
-    env=jaw_env_from_wav(TTS_WAV)
-    mqtt_pub("speaking","ON"); eyes_speak()
-    t=threading.Thread(target=speak_wav_play,args=(TTS_WAV,),daemon=True); t.start()
-    (jaw_chatter_fallback(text) if float(np.max(env) if env.size else 0.0)<0.05 else jaw_drive_by_env(env))
-    t.join(); mqtt_pub("speaking","OFF"); eyes_listen()
+    with _speech_lock:
+        mqtt_pub("speaking","ON")
+        try:
+            try:
+                p=subprocess.Popen([PIPER_BIN,"-m",PIPER_MODEL,"-f",TTS_WAV,"-q"],stdin=subprocess.PIPE,text=True,
+                                   stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                p.communicate(input=text)
+            except Exception as e:
+                print("[TTS]",e); jaw_chatter_fallback(text); return
+            _amplify_wav_inplace(TTS_WAV,VOLUME)
+            env=jaw_env_from_wav(TTS_WAV)
+            t=threading.Thread(target=speak_wav_play,args=(TTS_WAV,),daemon=True); t.start()
+            (jaw_chatter_fallback(text) if float(np.max(env) if env.size else 0.0)<0.05 else jaw_drive_by_env(env))
+            t.join()
+        finally:
+            _jaw_set(JAW_REST_FRAC)
+            mqtt_pub("speaking","OFF")
 
 def llm_reply(user_text:str)->str:
     payload={"model":OLLAMA_MODEL,"prompt":user_text,"system":SYSTEM_PROMPT,
              "stream":False,"keep_alive":KEEP_ALIVE,"options":OLLAMA_OPTS}
     try:
         start=time.monotonic()
-        r=requests.post(OLLAMA_URL,json=payload,timeout=(3,30)); r.raise_for_status()
+        r=requests.post(OLLAMA_URL,json=payload,timeout=OLLAMA_TIMEOUT); r.raise_for_status()
         elapsed=time.monotonic()-start; txt=(r.json().get("response") or "").strip().split("\n")[0].strip()
         mqtt_pub("llm/reply_time",f"{elapsed:.2f}")
         return txt or "Arrr, me brain’s foggy — try that again."
@@ -362,41 +387,80 @@ def resample_linear_int16(chunk_i16:np.ndarray,src_hz:int,dst_hz:int,state:dict)
     y=np.clip(np.round(y),-32768,32767).astype(np.int16)
     state["prev"]=x[i0[-1]+1:]; state["phase"]=idx[-1]-i0[-1]; return y
 
-def record_once(input_index:int,capture_rate:int,timeout_s:float)->str:
+def _recognized_text(result_json):
+    try:
+        txt=(json.loads(result_json).get("text") or "").strip()
+    except Exception:
+        return ""
+    return txt if txt and len(txt.split())>=MIN_TEXT_LEN else ""
+
+def record_once(input_index:int,capture_rate:int,timeout_s:float,stop_event=None)->str:
     if not stt_enabled or sd is None or _VOSK_MODEL is None: return ""
     rec=vosk.KaldiRecognizer(_VOSK_MODEL,VOSK_RATE); rec.SetWords(True)
     q=queue.Queue(maxsize=128); rs_state={"prev":np.zeros(0,np.int16),"phase":0.0}
-    preroll=collections.deque(maxlen=int(VOSK_RATE*PREROLL_SEC))
-    speaking=False; voiced_frames=0; MIN_VOICED_FRAMES=8
-    deadline=time.monotonic()+timeout_s
+    gate=SpeechGate(
+        sample_rate=VOSK_RATE,
+        energy_threshold=ENERGY_GATE,
+        preroll_seconds=PREROLL_SEC,
+        minimum_voiced_seconds=MIN_VOICED_SEC,
+        end_silence_seconds=END_SILENCE_SEC,
+    )
+    start_deadline=time.monotonic()+timeout_s
+    utterance_deadline=None
     def cb(indata,frames,time_info,status):
         try: q.put_nowait(bytes(indata))
         except queue.Full: pass
     with sd.RawInputStream(samplerate=capture_rate,blocksize=SD_BLOCKSIZE,device=input_index,dtype="int16",channels=1,callback=cb):
-        while time.monotonic()<deadline:
-            try: data=q.get(timeout=0.25)
+        while True:
+            now=time.monotonic()
+            if stop_event is not None and stop_event.is_set(): return ""
+            if not gate.speaking and now>=start_deadline: break
+            if gate.speaking and (
+                (utterance_deadline is not None and now>=utterance_deadline)
+                or gate.silence_complete(now)
+            ):
+                break
+            try: data=q.get(timeout=0.10)
             except queue.Empty: continue
             chunk=np.frombuffer(data,dtype=np.int16)
-            if float(np.mean(np.abs(chunk)))>ENERGY_GATE:
-                voiced_frames=min(voiced_frames+1,MIN_VOICED_FRAMES+10)
-                if not speaking and len(preroll)>0 and voiced_frames>=MIN_VOICED_FRAMES:
-                    rec.AcceptWaveform(np.array(preroll,np.int16).tobytes()); speaking=True
-            else:
-                if voiced_frames>0: voiced_frames-=1
             rs=resample_linear_int16(chunk,capture_rate,VOSK_RATE,rs_state)
-            if rs.size:
-                preroll.extend(rs.tolist())
-                if rec.AcceptWaveform(rs.tobytes()):
-                    j=json.loads(rec.Result()); txt=(j.get("text") or "").strip()
-                    if txt and len(txt.split())>=MIN_TEXT_LEN: return txt
-    j=json.loads(rec.FinalResult()); txt=(j.get("text") or "").strip()
-    if txt and len(txt.split())>=MIN_TEXT_LEN: return txt
-    return ""
+            gated=gate.process(rs,now)
+            if gated.speech_started:
+                utterance_deadline=now+MAX_UTTERANCE_SEC
+            if gated.audio.size and rec.AcceptWaveform(gated.audio.tobytes()):
+                txt=_recognized_text(rec.Result())
+                if txt: return txt
+    return _recognized_text(rec.FinalResult())
 
 motion_enabled=True; motion_count=0
+_motion_timer=None; _motion_timer_lock=threading.Lock()
+
+def _cancel_motion_timer():
+    global _motion_timer
+    with _motion_timer_lock:
+        if _motion_timer is not None:
+            _motion_timer.cancel()
+            _motion_timer=None
+
+def _confirm_motion():
+    global _motion_timer
+    with _motion_timer_lock:
+        _motion_timer=None
+    if motion_enabled and getattr(pir,"motion_detected",False):
+        _enqueue(EventKind.TRIGGER,source="pir")
+
+def _schedule_motion_trigger():
+    global _motion_timer
+    with _motion_timer_lock:
+        if _motion_timer is not None:
+            _motion_timer.cancel()
+        _motion_timer=threading.Timer(MOTION_HOLD_SEC,_confirm_motion)
+        _motion_timer.daemon=True
+        _motion_timer.start()
+
 class _DummyPIR:
     motion_detected=False
-    def wait_for_motion(self): time.sleep(0.25)
+    def close(self): pass
 pir=None
 if gpiozero is not None:
     try:
@@ -404,8 +468,9 @@ if gpiozero is not None:
         def _pir_on():
             global motion_count; motion_count+=1
             mqtt_pub("motion","ON"); mqtt_pub("motion/count",str(motion_count))
+            _schedule_motion_trigger()
         def _pir_off():
-            mqtt_pub("motion","OFF"); eyes_off()
+            mqtt_pub("motion","OFF"); _cancel_motion_timer()
         pir.when_motion=_pir_on; pir.when_no_motion=_pir_off; print("PIR ready")
     except Exception as e: print("[pir]",e)
 if pir is None:
@@ -432,68 +497,9 @@ if '_jaw' in globals() and _jaw:
     try: _jaw.fraction=JAW_REST_FRAC
     except Exception as e: print("[jaw init]",e)
 
-def _ha_device():
-    return {"identifiers":[f"holiday_{DEVICE_NAME}"],"name":DEVICE_NAME.capitalize(),
-            "manufacturer":"SkeletonWorks","model":"Animatronic v1"}
-
-def _disc_publish(path,payload):
-    mqtt_pub_abs(f"homeassistant/{path}",json.dumps(payload),retain=True)
-
 def publish_mqtt_discovery():
-    dev=_ha_device(); base=MQTT_BASE
-    _disc_publish(f"binary_sensor/{DEVICE_NAME}/motion/config",{
-        "name":f"{DEVICE_NAME.capitalize()} Motion","uniq_id":f"holiday_{DEVICE_NAME}_motion",
-        "stat_t":f"{base}/motion","pl_on":"ON","pl_off":"OFF","avty_t":f"{base}/availability","dev":dev})
-    _disc_publish(f"binary_sensor/{DEVICE_NAME}/speaking/config",{
-        "name":f"{DEVICE_NAME.capitalize()} Speaking","uniq_id":f"holiday_{DEVICE_NAME}_speaking",
-        "stat_t":f"{base}/speaking","pl_on":"ON","pl_off":"OFF","avty_t":f"{base}/availability","dev":dev})
-    _disc_publish(f"binary_sensor/{DEVICE_NAME}/ready/config",{
-        "name":f"{DEVICE_NAME.capitalize()} Ready","uniq_id":f"holiday_{DEVICE_NAME}_ready",
-        "stat_t":f"{base}/ready","pl_on":"ON","pl_off":"OFF","avty_t":f"{base}/availability","dev":dev})
-    _disc_publish(f"sensor/{DEVICE_NAME}/status/config",{
-        "name":f"{DEVICE_NAME.capitalize()} Status","uniq_id":f"holiday_{DEVICE_NAME}_status",
-        "stat_t":f"{base}/status","avty_t":f"{base}/availability","dev":dev})
-    _disc_publish(f"sensor/{DEVICE_NAME}/reply_time/config",{
-        "name":f"{DEVICE_NAME.capitalize()} Reply Time","uniq_id":f"holiday_{DEVICE_NAME}_reply_time",
-        "stat_t":f"{base}/llm/reply_time","unit_of_measurement":"s","avty_t":f"{base}/availability","dev":dev})
-    _disc_publish(f"sensor/{DEVICE_NAME}/transcript/config",{
-        "name":f"{DEVICE_NAME.capitalize()} Transcript","uniq_id":f"holiday_{DEVICE_NAME}_transcript",
-        "stat_t":f"{base}/transcript","avty_t":f"{base}/availability","dev":dev})
-    _disc_publish(f"number/{DEVICE_NAME}/eyes_dim/config",{
-        "name":f"{DEVICE_NAME.capitalize()} Eyes Dim %","uniq_id":f"holiday_{DEVICE_NAME}_eyes_dim",
-        "cmd_t":f"{base}/eyes/dim/set","stat_t":f"{base}/eyes/dim","min":0,"max":100,"step":1,"mode":"box",
-        "unit_of_measurement":"%","avty_t":f"{base}/availability","dev":dev})
-    _disc_publish(f"number/{DEVICE_NAME}/eyes_full/config",{
-        "name":f"{DEVICE_NAME.capitalize()} Eyes Full %","uniq_id":f"holiday_{DEVICE_NAME}_eyes_full",
-        "cmd_t":f"{base}/eyes/full/set","stat_t":f"{base}/eyes/full","min":0,"max":100,"step":1,"mode":"box",
-        "unit_of_measurement":"%","avty_t":f"{base}/availability","dev":dev})
-    _disc_publish(f"number/{DEVICE_NAME}/volume/config",{
-        "name":f"{DEVICE_NAME.capitalize()} Volume %","uniq_id":f"holiday_{DEVICE_NAME}_volume",
-        "cmd_t":f"{base}/volume/set","stat_t":f"{base}/volume","min":0,"max":200,"step":5,"mode":"box",
-        "unit_of_measurement":"%","avty_t":f"{base}/availability","dev":dev})
-    _disc_publish(f"switch/{DEVICE_NAME}/motion_enabled/config",{
-        "name":f"{DEVICE_NAME.capitalize()} Motion Enabled","uniq_id":f"holiday_{DEVICE_NAME}_motion_enabled",
-        "cmd_t":f"{base}/motion/enabled/set","stat_t":f"{base}/motion/enabled","pl_on":"ON","pl_off":"OFF",
-        "avty_t":f"{base}/availability","dev":dev})
-    _disc_publish(f"switch/{DEVICE_NAME}/night_mode/config",{
-        "name":f"{DEVICE_NAME.capitalize()} Night Mode","uniq_id":f"holiday_{DEVICE_NAME}_night_mode",
-        "cmd_t":f"{base}/night_mode/set","stat_t":f"{base}/night_mode","pl_on":"ON","pl_off":"OFF",
-        "avty_t":f"{base}/availability","dev":dev})
-    _disc_publish(f"button/{DEVICE_NAME}/say/config",{
-        "name":f"{DEVICE_NAME.capitalize()} Say","uniq_id":f"holiday_{DEVICE_NAME}_say_btn",
-        "cmd_t":f"{base}/say/set","avty_t":f"{base}/availability","dev":dev})
-    _disc_publish(f"button/{DEVICE_NAME}/blink/config",{
-        "name":f"{DEVICE_NAME.capitalize()} Blink","uniq_id":f"holiday_{DEVICE_NAME}_blink_btn",
-        "cmd_t":f"{base}/blink/set","avty_t":f"{base}/availability","dev":dev})
-    _disc_publish(f"button/{DEVICE_NAME}/flicker/config",{
-        "name":f"{DEVICE_NAME.capitalize()} Flicker","uniq_id":f"holiday_{DEVICE_NAME}_flicker_btn",
-        "cmd_t":f"{base}/flicker/set","avty_t":f"{base}/availability","dev":dev})
-    _disc_publish(f"button/{DEVICE_NAME}/restart/config",{
-        "name":f"{DEVICE_NAME.capitalize()} Restart Service","uniq_id":f"holiday_{DEVICE_NAME}_restart_btn",
-        "cmd_t":f"{base}/restart/set","avty_t":f"{base}/availability","dev":dev})
-    _disc_publish(f"button/{DEVICE_NAME}/motion_trigger/config",{
-        "name":f"{DEVICE_NAME.capitalize()} Trigger Motion","uniq_id":f"holiday_{DEVICE_NAME}_motion_trigger_btn",
-        "cmd_t":f"{base}/motion/trigger/set","avty_t":f"{base}/availability","dev":dev})
+    for topic,payload in discovery_messages(DEVICE_NAME):
+        mqtt_pub_abs(topic,"" if payload is None else json.dumps(payload),retain=True)
 
 night_mode=False; _day={"listen":None,"speak":None,"vol":None}
 def _set_eyes_dim(v):
@@ -504,6 +510,7 @@ def _set_volume(v):
     global VOLUME; VOLUME=clamp(v,0,2); mqtt_pub("volume",str(int(round(100*VOLUME))))
 def _set_motion_enabled(payload):
     global motion_enabled; motion_enabled=str(payload).lower() in ("on","true","1","yes")
+    if not motion_enabled: _cancel_motion_timer()
     mqtt_pub("motion/enabled","ON" if motion_enabled else "OFF")
 def _toggle_night_mode(payload):
     global night_mode,EYES_LISTEN_FRAC,EYES_SPEAK_FRAC,VOLUME,_day
@@ -547,75 +554,154 @@ def _transcript_publish_and_clear():
     except Exception as e: print("[transcript]",e)
     _transcript=None
 
-def on_sigint(sig,frame):
-    print("Exiting...")
-    try: mqtt_pub("availability","offline",retain=True)
-    except: pass
-    try: eyes_off()
-    except: pass
-    try:
-        if '_pca' in globals() and _pca: _pca.deinit()
-    except: pass
-    try:
-        if mqttc: mqttc.loop_stop(); mqttc.disconnect()
-    except: pass
-    sys.exit(0)
-signal.signal(signal.SIGINT,on_sigint)
-
 def _do_mqtt_connect():
     if mqttc is not None:
         mqtt_connect()
-        mqtt_pub("ready","ON"); eyes_off()
-_do_mqtt_connect()
+        mqtt_pub("ready","ON")
 
-try:
-    if requests:
+def _warm_ollama():
+    if not requests: return
+    try:
         requests.post(OLLAMA_URL,json={"model":OLLAMA_MODEL,"prompt":"warming","stream":False,
                                        "keep_alive":KEEP_ALIVE,"options":{"num_predict":1}},timeout=(2,10))
-except Exception: pass
+    except Exception as e:
+        print("[ollama warmup]",e)
+
+def _runtime_state_changed(state):
+    mqtt_pub("status",state.value,retain=True)
+    if state in (RuntimeState.GREETING,RuntimeState.SPEAKING):
+        eyes_speak()
+    elif state in (RuntimeState.LISTENING,RuntimeState.THINKING):
+        eyes_listen()
+    elif state is RuntimeState.EFFECT:
+        return
+    else:
+        eyes_idle()
+
+def _say_goodbye():
+    gb=random.choice(GOODBYE_LINES) if GOODBYE_LINES else "Goodbye."
+    _transcript_add("assistant",gb)
+    controller.set_state(RuntimeState.SPEAKING)
+    speak_with_jaw(gb)
 
 def _conversation_loop():
-    while True:
-        eyes_listen()
-        text=record_once(in_idx or 0,44100,NO_SPEECH_TIMEOUT)
+    while not controller.stop_event.is_set():
+        controller.set_state(RuntimeState.LISTENING)
+        text=record_once(
+            in_idx or 0,
+            44100,
+            SPEECH_START_TIMEOUT,
+            controller.stop_event,
+        )
+        if controller.stop_event.is_set(): return
         if not text:
-            gb=random.choice(GOODBYE_LINES) if GOODBYE_LINES else "Goodbye."
-            _transcript_add("assistant",gb); speak_with_jaw(gb); _transcript_publish_and_clear(); eyes_off(); break
-        if EXIT_RE.search(text):
-            _transcript_add("user",text)
-            gb=random.choice(GOODBYE_LINES) if GOODBYE_LINES else "Goodbye."
-            _transcript_add("assistant",gb); speak_with_jaw(gb); _transcript_publish_and_clear(); eyes_off(); break
+            _say_goodbye(); return
         _transcript_add("user",text)
-        eyes_listen()
+        if EXIT_RE.search(text):
+            _say_goodbye(); return
+        controller.set_state(RuntimeState.THINKING)
         reply=llm_reply(text)
+        if controller.stop_event.is_set(): return
         _transcript_add("assistant",reply)
+        controller.set_state(RuntimeState.SPEAKING)
         speak_with_jaw(reply)
-        eyes_listen()
 
 _last_talk=0.0
 def _manual_trigger():
     global _last_talk
-    now=time.time()
-    if (now-_last_talk)<MOTION_COOLDOWN_SEC: return
-    _last_talk=now
+    now=time.monotonic()
+    if (now-_last_talk)<MOTION_COOLDOWN_SEC:
+        controller.set_state(RuntimeState.COOLDOWN)
+        return
     _transcript_start()
-    opener=pick_opening_line()
-    _transcript_add("assistant",opener); speak_with_jaw(opener)
-    _conversation_loop()
-
-print("👀 Waiting for motion…")
-while True:
     try:
-        eyes_off()
-        pir.wait_for_motion()
-        if not motion_enabled: continue
-        start=time.time()
-        while getattr(pir,"motion_detected",False) and (time.time()-start)<MOTION_HOLD_SEC:
-            time.sleep(0.05)
-        if not (getattr(pir,"motion_detected",False) and (time.time()-start)>=MOTION_HOLD_SEC):
-            continue
+        opener=pick_opening_line()
+        _transcript_add("assistant",opener)
+        controller.set_state(RuntimeState.GREETING)
+        speak_with_jaw(opener)
+        _conversation_loop()
+    finally:
+        _last_talk=time.monotonic()
+        _transcript_publish_and_clear()
+        if not controller.stop_event.is_set():
+            controller.set_state(RuntimeState.COOLDOWN)
+
+def _handle_event(event):
+    if event.kind is EventKind.TRIGGER:
         _manual_trigger()
-    except KeyboardInterrupt:
-        break
+    elif event.kind is EventKind.SAY:
+        _transcript_start()
+        try:
+            _transcript_add("assistant",str(event.payload))
+            controller.set_state(RuntimeState.SPEAKING)
+            speak_with_jaw(str(event.payload))
+        finally:
+            _transcript_publish_and_clear()
+    elif event.kind is EventKind.BLINK:
+        controller.set_state(RuntimeState.EFFECT)
+        eyes_blink(6,120,blocking=True)
+    elif event.kind is EventKind.FLICKER:
+        controller.set_state(RuntimeState.EFFECT)
+        eyes_flicker(5.0,0.2,0.7,60,blocking=True)
+    elif event.kind is EventKind.SET_EYES_DIM:
+        _set_eyes_dim(float(event.payload))
+    elif event.kind is EventKind.SET_EYES_FULL:
+        _set_eyes_full(float(event.payload))
+    elif event.kind is EventKind.SET_VOLUME:
+        _set_volume(float(event.payload))
+    elif event.kind is EventKind.SET_MOTION_ENABLED:
+        _set_motion_enabled(event.payload)
+    elif event.kind is EventKind.SET_NIGHT_MODE:
+        _toggle_night_mode(event.payload)
+    elif event.kind is EventKind.RESTART:
+        mqtt_pub("availability","offline",retain=True)
+        controller.request_stop("mqtt-restart")
+
+    if not controller.stop_event.is_set():
+        controller.set_state(RuntimeState.IDLE)
+
+def _signal_handler(sig,frame):
+    print(f"[signal] {signal.Signals(sig).name}; stopping")
+    if controller is not None:
+        controller.request_stop("signal")
+
+def _cleanup():
+    _cancel_motion_timer()
+    try: _transcript_publish_and_clear()
+    except Exception: pass
+    try: mqtt_pub("ready","OFF",retain=True)
+    except Exception: pass
+    try: mqtt_pub("availability","offline",retain=True)
+    except Exception: pass
+    try: _jaw_set(JAW_REST_FRAC)
+    except Exception: pass
+    try: eyes_off()
+    except Exception: pass
+    try: pir.close()
+    except Exception: pass
+    try:
+        if _pca: _pca.deinit()
+    except Exception: pass
+    try:
+        if mqttc: mqttc.loop_stop(); mqttc.disconnect()
+    except Exception: pass
+
+def main():
+    global controller
+    controller=SkeletonController(_handle_event,_runtime_state_changed)
+    signal.signal(signal.SIGINT,_signal_handler)
+    signal.signal(signal.SIGTERM,_signal_handler)
+    _do_mqtt_connect()
+    _warm_ollama()
+    print("👀 Waiting for motion or MQTT commands…")
+    try:
+        controller.run_forever()
     except Exception as e:
-        print("[loop]",e); time.sleep(0.5)
+        print("[controller]",e)
+        controller.request_stop("controller-error")
+        raise
+    finally:
+        _cleanup()
+
+if __name__ == "__main__":
+    main()

@@ -12,7 +12,7 @@ views:
           - number.skeleton_volume
           - button.skeleton_blink
           - button.skeleton_flicker
-          - button.skeleton_say
+          - text.skeleton_say
       - type: entities
         title: Status
         entities:
