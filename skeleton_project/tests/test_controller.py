@@ -255,6 +255,59 @@ class SkeletonControllerTests(unittest.TestCase):
         self.assertIn(RuntimeState.IDLE, observed)
         self.assertEqual(controller.state, RuntimeState.STOPPING)
 
+    def test_maintenance_request_interrupts_and_preempts_queued_work(self):
+        scene_started = threading.Event()
+        handled = []
+        interrupted = []
+        controller = None
+
+        def handler(event):
+            handled.append(event.kind)
+            if event.kind is EventKind.PLAY_SCENE:
+                scene_started.set()
+                interrupted.append(
+                    controller.maintenance_interrupt_event.wait(timeout=1.0)
+                )
+            elif event.kind is EventKind.SET_MAINTENANCE_MODE:
+                controller.set_maintenance_active(event.payload)
+                controller.request_stop("test")
+
+        controller = SkeletonController(handler)
+        controller.enqueue(EventKind.PLAY_SCENE, "awakening", "test")
+        worker = threading.Thread(target=controller.run_forever)
+        worker.start()
+        self.assertTrue(scene_started.wait(timeout=1.0))
+        self.assertTrue(controller.enqueue(EventKind.SAY, "queued", "test"))
+
+        self.assertTrue(controller.request_maintenance(True, "test"))
+
+        worker.join(timeout=1.0)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(interrupted, [True])
+        self.assertEqual(
+            handled,
+            [EventKind.PLAY_SCENE, EventKind.SET_MAINTENANCE_MODE],
+        )
+
+    def test_initial_maintenance_state_does_not_run_idle_handler(self):
+        idle_calls = []
+        controller = None
+
+        def handler(event):
+            self.assertEqual(event.kind, EventKind.SET_MAINTENANCE_MODE)
+            controller.request_stop("test")
+
+        controller = SkeletonController(
+            handler,
+            idle_handler=lambda _interrupt: idle_calls.append(True),
+            initial_state=RuntimeState.MAINTENANCE,
+        )
+        controller.request_maintenance(True, "test")
+
+        controller.run_forever()
+
+        self.assertEqual(idle_calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

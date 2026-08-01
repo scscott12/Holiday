@@ -30,7 +30,11 @@ def can_switch_personality(runtime_state: Any) -> bool:
     """Allow changes only outside visits, scenes, speech, and idle actions."""
 
     value = getattr(runtime_state, "value", runtime_state)
-    return str(value or "").strip().lower() in ("idle", "cooldown")
+    return str(value or "").strip().lower() in (
+        "idle",
+        "cooldown",
+        "maintenance",
+    )
 
 
 def _number(

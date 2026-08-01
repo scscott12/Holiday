@@ -46,6 +46,9 @@ Environment="CONTENT_RELOAD_ENABLED=1"
 Environment="PERSIST_SETTINGS_ENABLED=1"
 Environment="PERSIST_SETTINGS_PATH=/var/lib/holiday-skeleton/operator-settings.json"
 
+# First-run lockout default; the persisted Home Assistant choice wins afterward.
+Environment="MAINTENANCE_MODE=0"
+
 # Self-diagnostics, Pi telemetry, and rolling response-latency statistics.
 Environment="HEALTH_INTERVAL_SEC=30"
 Environment="HEALTH_LATENCY_WINDOW=20"

@@ -25,6 +25,7 @@ class EventKind(str, Enum):
     SET_MOTION_ENABLED = "set_motion_enabled"
     SET_IDLE_LIFE_ENABLED = "set_idle_life_enabled"
     SET_NIGHT_MODE = "set_night_mode"
+    SET_MAINTENANCE_MODE = "set_maintenance_mode"
     SET_PERSONALITY = "set_personality"
     PLAY_SCENE = "play_scene"
     STOP_SCENE = "stop_scene"
@@ -46,6 +47,7 @@ class RuntimeState(str, Enum):
     IDLE_LIFE = "idle_life"
     SELF_TEST = "self_test"
     CONTENT_RELOAD = "content_reload"
+    MAINTENANCE = "maintenance"
     COOLDOWN = "cooldown"
     STOPPING = "stopping"
     ERROR = "error"
@@ -68,17 +70,22 @@ class SkeletonController:
         max_queue_size: int = 64,
         idle_handler: Optional[Callable[[threading.Event], None]] = None,
         heartbeat: Optional[Callable[[RuntimeState], None]] = None,
+        initial_state: RuntimeState = RuntimeState.IDLE,
     ) -> None:
         self._handler = handler
         self._state_changed = state_changed
         self._idle_handler = idle_handler
         self._heartbeat = heartbeat
+        self._initial_state = initial_state
         self._queue: queue.Queue[Event] = queue.Queue(maxsize=max_queue_size)
         self._stop_event = threading.Event()
         self._idle_interrupt = threading.Event()
         self._scene_interrupt = threading.Event()
         self._self_test_interrupt = threading.Event()
         self._content_reload_interrupt = threading.Event()
+        self._maintenance_interrupt = threading.Event()
+        self._maintenance_request: Optional[Event] = None
+        self._maintenance_lock = threading.Lock()
         self._pending_trigger = False
         self._pending_lock = threading.Lock()
         self._state = RuntimeState.STARTING
@@ -107,6 +114,12 @@ class SkeletonController:
     def content_reload_interrupt_event(self) -> threading.Event:
         return self._content_reload_interrupt
 
+    @property
+    def maintenance_interrupt_event(self) -> threading.Event:
+        """Signal set from lockout request through completed unlock."""
+
+        return self._maintenance_interrupt
+
     def interrupt_idle(self) -> None:
         """Ask an in-progress idle behavior to yield without queuing work."""
 
@@ -126,6 +139,46 @@ class SkeletonController:
         """Ask an in-progress content reload to keep the active libraries."""
 
         self._content_reload_interrupt.set()
+
+    def request_maintenance(self, enabled: bool, source: str = "runtime") -> bool:
+        """Prioritize a maintenance change without touching hardware here.
+
+        MQTT callbacks can call this while the controller owns a long-running
+        visit or scene.  An enable request raises the shared interrupt
+        immediately, while the controller consumes the latest requested state
+        ahead of ordinary queued work and performs the hardware-safe transition.
+        """
+
+        if self._stop_event.is_set():
+            return False
+        requested = bool(enabled)
+        if requested:
+            self._maintenance_interrupt.set()
+            self.interrupt_idle()
+            self.interrupt_scene()
+            self.interrupt_self_test()
+            self.interrupt_content_reload()
+        with self._maintenance_lock:
+            self._maintenance_request = Event(
+                EventKind.SET_MAINTENANCE_MODE,
+                requested,
+                source,
+            )
+        return True
+
+    def set_maintenance_active(self, active: bool) -> None:
+        """Keep foreground work interrupted for the duration of lockout."""
+
+        if active:
+            self._maintenance_interrupt.set()
+        else:
+            self._maintenance_interrupt.clear()
+
+    def _take_maintenance_request(self) -> Optional[Event]:
+        with self._maintenance_lock:
+            event = self._maintenance_request
+            self._maintenance_request = None
+            return event
 
     def set_state(self, state: RuntimeState) -> None:
         changed = state != self._state
@@ -186,6 +239,7 @@ class SkeletonController:
         self.interrupt_scene()
         self.interrupt_self_test()
         self.interrupt_content_reload()
+        self._maintenance_interrupt.set()
         try:
             self._queue.put_nowait(Event(EventKind.SHUTDOWN, source=source))
         except queue.Full:
@@ -193,13 +247,16 @@ class SkeletonController:
             pass
 
     def run_forever(self) -> None:
-        self.set_state(RuntimeState.IDLE)
+        self.set_state(self._initial_state)
         while not self._stop_event.is_set():
             self.heartbeat()
             if self._state is RuntimeState.IDLE:
                 self._idle_interrupt.clear()
+            event = self._take_maintenance_request()
+            queued = event is None
             try:
-                event = self._queue.get(timeout=0.25)
+                if event is None:
+                    event = self._queue.get(timeout=0.25)
             except queue.Empty:
                 if (
                     self._idle_handler is not None
@@ -217,7 +274,8 @@ class SkeletonController:
                 continue
 
             if event.kind is EventKind.SHUTDOWN:
-                self._queue.task_done()
+                if queued:
+                    self._queue.task_done()
                 break
 
             if event.kind is EventKind.PLAY_SCENE:
@@ -255,6 +313,7 @@ class SkeletonController:
                 if event.kind is EventKind.TRIGGER:
                     with self._pending_lock:
                         self._pending_trigger = False
-                self._queue.task_done()
+                if queued:
+                    self._queue.task_done()
 
         self.set_state(RuntimeState.STOPPING)

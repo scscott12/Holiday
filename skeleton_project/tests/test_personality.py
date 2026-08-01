@@ -64,6 +64,7 @@ class PersonalityLibraryTests(unittest.TestCase):
     def test_switching_is_allowed_only_between_foreground_activities(self):
         self.assertTrue(can_switch_personality("idle"))
         self.assertTrue(can_switch_personality("cooldown"))
+        self.assertTrue(can_switch_personality("maintenance"))
         for state in ("starting", "greeting", "listening", "thinking", "speaking", "scene", "idle_life", "stopping"):
             self.assertFalse(can_switch_personality(state), state)
 
