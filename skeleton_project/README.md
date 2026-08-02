@@ -17,6 +17,7 @@ holiday_skeleton/
   barge_in.py                echo-aware interruption command monitor
   brain.py                   Ollama stream producer and phrase assembly
   content.py                 transactional personality/scene preparation
+  deployment.py              versioned install, readiness gate, and rollback
   event_journal.py           bounded privacy-safe operational history
   health.py                  health aggregation and Pi telemetry
   idle_life.py               sparse idle-action scheduler
@@ -167,9 +168,28 @@ views:
 ## Install (short)
 1. `sudo apt-get install -y python3-venv portaudio19-dev alsa-utils i2c-tools python3-lgpio`
 2. `sudo usermod -aG i2c,audio,video,gpio $USER` → reboot once.
-3. Copy code to `/opt/holiday-skeleton`, create venv, `pip install -r requirements.txt`
-4. Install `systemd/holiday-skeleton.service` and an override env file (see below).
-5. `sudo systemctl enable --now holiday-skeleton`
+3. Create the systemd override env file below with the MQTT and hardware settings.
+4. From this `skeleton_project` source directory, run `sudo python3 scripts/deploy_release.py`.
+5. Run `sudo systemctl enable holiday-skeleton` once after a fresh install.
+
+## Safe deployment and rollback
+
+`scripts/deploy_release.py` is the supported fresh-install and upgrade path. It prepares `/opt/holiday-skeleton/releases/<release-id>` while the current prop keeps running: copies an allowlisted runtime package, creates a new virtual environment, installs dependencies without using user pip configuration or cache, compiles and imports the staged runtime, validates the effective personality/scene/WAV content, verifies the systemd unit, writes a SHA-256 release manifest, and checks free disk space. A root-only nonblocking lock prevents concurrent deployments.
+
+Only after every preflight passes does the script stop the service. It snapshots operator settings, the bounded diagnostic journal, shared personalities/scenes/sounds, and the prior base service unit below `/var/lib/holiday-skeleton-deploy/backups`. MQTT credentials remain solely in the existing `/etc/systemd/system/holiday-skeleton.service.d/override.conf`; the deployer neither reads nor copies that file.
+
+The code switch is one atomic `current` symlink replacement. Shared operator content remains at `/opt/holiday-skeleton/{personalities.json,scenes.json,sounds}` and is seeded from the package only when absent, so an upgrade never silently replaces working content. The installed unit starts Python from `current`, waits for the runtime's native `READY=1`, then requires it to remain `active/running` without a restart for the configured stability window.
+
+If activation, readiness, or stability fails, the deployer stops the candidate, restores the prior link, state, content, and unit, reloads systemd, and verifies the old service before returning an error. The first run can migrate the older direct `/opt/holiday-skeleton` layout because those legacy files remain untouched and the prior unit is part of the rollback snapshot. A successful update can be reversed deliberately with:
+
+```bash
+cd /path/to/the/skeleton_project/source
+sudo python3 scripts/deploy_release.py --rollback
+```
+
+Manual rollback is accepted only when `current` still matches the last recorded deployment; stale metadata can never replace a different active release. It restores the exact pre-deployment settings and content snapshot, so save any newer intentional content edits separately first. Releases and backups are retained rather than pruned automatically.
+
+The deployer does not run `apt`, update Raspberry Pi OS or firmware, change the systemd override, rotate credentials, publish MQTT data, or trigger a hardware self-test. After a successful deployment, use Maintenance Mode and the manual self-test/calibration controls for physical acceptance.
 
 ## Systemd override (env)
 Create `/etc/systemd/system/holiday-skeleton.service.d/override.conf`:
