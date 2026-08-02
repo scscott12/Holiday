@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest import mock
 
 import skeleton_all_in_one_mqtt as runtime
+from holiday_skeleton.calibration import HardwareCalibration
 from holiday_skeleton.health import ComponentState
 from holiday_skeleton.settings import (
     DayProfile,
@@ -36,6 +37,14 @@ class RuntimeSettingsTests(unittest.TestCase):
             idle_life_enabled=False,
             night_mode=True,
             maintenance_mode=True,
+            calibration=HardwareCalibration(
+                jaw_rest=0.3,
+                jaw_max=0.82,
+                eyes_inverted=True,
+                microphone_gate=420,
+                pir_hold_seconds=1.25,
+                pir_cooldown_seconds=15,
+            ),
             eyes_dim=0.05,
             eyes_full=0.4,
             volume=0.5,
@@ -59,6 +68,12 @@ class RuntimeSettingsTests(unittest.TestCase):
                 EYES_LISTEN_FRAC=0.18,
                 EYES_SPEAK_FRAC=1.0,
                 VOLUME=1.0,
+                JAW_REST_FRAC=0.25,
+                JAW_MAX_FRAC=1.0,
+                EYES_INVERT=0,
+                ENERGY_GATE=180.0,
+                MOTION_HOLD_SEC=0.8,
+                MOTION_COOLDOWN_SEC=8.0,
                 _day={"listen": None, "speak": None, "vol": None},
                 _settings_store=None,
                 _settings_loaded=None,
@@ -75,6 +90,12 @@ class RuntimeSettingsTests(unittest.TestCase):
                 self.assertEqual(runtime.EYES_LISTEN_FRAC, 0.05)
                 self.assertEqual(runtime.EYES_SPEAK_FRAC, 0.4)
                 self.assertEqual(runtime.VOLUME, 0.5)
+                self.assertEqual(runtime.JAW_REST_FRAC, 0.3)
+                self.assertEqual(runtime.JAW_MAX_FRAC, 0.82)
+                self.assertEqual(runtime.EYES_INVERT, 1)
+                self.assertEqual(runtime.ENERGY_GATE, 420)
+                self.assertEqual(runtime.MOTION_HOLD_SEC, 1.25)
+                self.assertEqual(runtime.MOTION_COOLDOWN_SEC, 15)
                 self.assertEqual(runtime._day["listen"], 0.2)
                 self.assertEqual(runtime._day["speak"], 0.8)
                 self.assertEqual(runtime._day["vol"], 1.0)

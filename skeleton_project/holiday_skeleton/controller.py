@@ -31,6 +31,7 @@ class EventKind(str, Enum):
     STOP_SCENE = "stop_scene"
     RUN_SELF_TEST = "run_self_test"
     RELOAD_CONTENT = "reload_content"
+    CALIBRATION_COMMAND = "calibration_command"
     RESTART = "restart"
     SHUTDOWN = "shutdown"
 
@@ -47,6 +48,7 @@ class RuntimeState(str, Enum):
     IDLE_LIFE = "idle_life"
     SELF_TEST = "self_test"
     CONTENT_RELOAD = "content_reload"
+    CALIBRATION = "calibration"
     MAINTENANCE = "maintenance"
     COOLDOWN = "cooldown"
     STOPPING = "stopping"

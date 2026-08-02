@@ -79,11 +79,20 @@ pip install paho-mqtt
 - CONTENT_RELOAD_ENABLED=1 adds a transactional Reload Content button for personalities, scenes, and WAV cues.
 - Reload is accepted while idle or maintenance-locked; invalid or interrupted preparation keeps the last known-good content active.
 - PERSIST_SETTINGS_ENABLED=1 restores operator controls after service/Pi restarts.
-- Only personality, switches, night/maintenance mode, eye levels, and volume are saved; visitor speech and credentials are never written.
+- Only personality, switches, night/maintenance mode, eye/volume controls, and
+  validated hardware calibration are saved; visitor speech and credentials are
+  never written.
 - The packaged service owns /var/lib/holiday-skeleton and writes the state file atomically with 0600 permissions.
 - MAINTENANCE_MODE=0 is the first-run default. Turn on the Home Assistant
   Maintenance Mode switch before working on the prop; it forces eyes off and
   the jaw to rest, blocks actuation commands, and persists when settings are enabled.
+- CALIBRATION_ENABLED=1 exposes a maintenance-only staged calibration workflow.
+- Calibration covers jaw rest/max, eye polarity and levels, microphone gate,
+  speaker volume, PIR hold, and visitor cooldown in one atomic settings save.
+- CALIBRATION_PREVIEW_SEC defaults to 0.6 seconds; eye previews remain capped at
+  35% while jaw positions must be increased gradually and observed for binding.
+- CALIBRATION_MIC_SAMPLE_SEC defaults to 1.5 seconds and reports ambient RMS plus
+  a recommendation without silently changing the staged gate.
 - HEALTH_INTERVAL_SEC=30 publishes component health, Pi telemetry, and latency statistics without blocking audio.
 - HEALTH_LATENCY_WINDOW=20 controls the recent-turn rolling average/P95 window.
 - CPU temperature, disk use, current throttle flags, Piper availability, and Ollama are evaluated automatically.
@@ -173,3 +182,11 @@ sudo journalctl -u holiday-skeleton -f
 # report ON, but no output may move or speak. Change an eye level and confirm it
 # is saved without lighting the eyes. Restart the service and confirm the lock
 # returns, then turn Maintenance Mode off and run the manual self-test normally.
+# Turn Night Mode off and Maintenance Mode on, then press Start Calibration.
+# Walk through all nine steps. Preview jaw positions gradually, confirm logical
+# eye off is physically dark, sample ambient microphone RMS, play the speaker
+# phrase, and inspect live PIR state/timing. Press Save Calibration, restart the
+# service, and confirm the version-3 values return. Repeat with Cancel, then with
+# an unwritable settings path; neither case may replace the working calibration.
+# Unlocking Maintenance Mode mid-session must cancel the draft and leave the jaw
+# at its prior rest position with the eyes physically off.

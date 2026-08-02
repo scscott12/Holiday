@@ -3,6 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from holiday_skeleton.calibration import HardwareCalibration
+
 from holiday_skeleton.settings import (
     DayProfile,
     MAX_SETTINGS_BYTES,
@@ -24,6 +26,14 @@ def sample_settings(**overrides):
         "volume": 0.54,
         "day_profile": DayProfile(eyes_dim=0.18, eyes_full=0.8, volume=0.9),
         "maintenance_mode": True,
+        "calibration": HardwareCalibration(
+            jaw_rest=0.2,
+            jaw_max=0.9,
+            eyes_inverted=True,
+            microphone_gate=360,
+            pir_hold_seconds=1.1,
+            pir_cooldown_seconds=12,
+        ),
     }
     values.update(overrides)
     return OperatorSettings(**values)
@@ -78,6 +88,7 @@ class OperatorSettingsStoreTests(unittest.TestCase):
                 "eyes_full",
                 "volume",
                 "day_profile",
+                "calibration",
             },
         )
         serialized = str(payload).lower()
@@ -85,7 +96,7 @@ class OperatorSettingsStoreTests(unittest.TestCase):
             self.assertNotIn(forbidden, serialized)
 
     def test_rejects_incompatible_unknown_and_missing_fields(self):
-        for version in (3, True):
+        for version in (4, True):
             with self.subTest(version=version):
                 payload = sample_settings().to_payload()
                 payload["version"] = version
@@ -109,11 +120,30 @@ class OperatorSettingsStoreTests(unittest.TestCase):
         payload = sample_settings().to_payload()
         payload["version"] = 1
         payload["settings"].pop("maintenance_mode")
+        payload["settings"].pop("calibration")
 
         restored = settings_from_payload(payload)
 
         self.assertFalse(restored.maintenance_mode)
         self.assertEqual(restored.personality, "graveyard_host")
+        self.assertEqual(restored.calibration, HardwareCalibration())
+
+    def test_version_two_file_uses_configured_hardware_defaults(self):
+        payload = sample_settings().to_payload()
+        payload["version"] = 2
+        payload["settings"].pop("calibration")
+        configured = HardwareCalibration(
+            jaw_rest=0.3,
+            jaw_max=0.8,
+            eyes_inverted=True,
+            microphone_gate=450,
+            pir_hold_seconds=1.5,
+            pir_cooldown_seconds=20,
+        )
+
+        restored = settings_from_payload(payload, configured)
+
+        self.assertEqual(restored.calibration, configured)
 
     def test_rejects_invalid_names_types_ranges_and_non_finite_numbers(self):
         cases = (

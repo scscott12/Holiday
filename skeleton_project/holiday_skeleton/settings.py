@@ -12,8 +12,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+from holiday_skeleton.calibration import (
+    CalibrationConfigError,
+    DEFAULT_HARDWARE_CALIBRATION,
+    HardwareCalibration,
+    hardware_calibration_from_payload,
+)
 
-SETTINGS_VERSION = 2
+
+SETTINGS_VERSION = 3
 MAX_SETTINGS_BYTES = 16 * 1024
 _SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -40,6 +47,7 @@ class OperatorSettings:
     volume: float
     day_profile: DayProfile
     maintenance_mode: bool = False
+    calibration: HardwareCalibration = DEFAULT_HARDWARE_CALIBRATION
     updated_at: str = "never"
 
     def to_payload(self) -> dict[str, Any]:
@@ -60,6 +68,7 @@ class OperatorSettings:
                     "eyes_full": self.day_profile.eyes_full,
                     "volume": self.day_profile.volume,
                 },
+                "calibration": self.calibration.to_payload(),
             },
         }
 
@@ -100,13 +109,16 @@ def _number(value: Any, label: str, minimum: float, maximum: float) -> float:
     return number
 
 
-def settings_from_payload(payload: Any) -> OperatorSettings:
+def settings_from_payload(
+    payload: Any,
+    calibration_defaults: HardwareCalibration = DEFAULT_HARDWARE_CALIBRATION,
+) -> OperatorSettings:
     root = _mapping(payload, "saved settings")
     _require_exact_fields(root, {"version", "updated_at", "settings"}, "saved settings")
     version = root["version"]
-    if isinstance(version, bool) or version not in (1, SETTINGS_VERSION):
+    if isinstance(version, bool) or version not in (1, 2, SETTINGS_VERSION):
         raise SettingsConfigError(
-            f"unsupported settings version {version!r}; expected 1 or {SETTINGS_VERSION}"
+            f"unsupported settings version {version!r}; expected 1, 2, or {SETTINGS_VERSION}"
         )
     updated_at = root["updated_at"]
     if not isinstance(updated_at, str) or not updated_at or len(updated_at) > 64:
@@ -125,6 +137,8 @@ def settings_from_payload(payload: Any) -> OperatorSettings:
     }
     if version >= 2:
         expected.add("maintenance_mode")
+    if version >= 3:
+        expected.add("calibration")
     _require_exact_fields(values, expected, "settings")
     personality = values["personality"]
     if not isinstance(personality, str) or not _SAFE_NAME.fullmatch(personality):
@@ -141,6 +155,14 @@ def settings_from_payload(payload: Any) -> OperatorSettings:
         eyes_full=_number(day_values["eyes_full"], "day_profile.eyes_full", 0.0, 1.0),
         volume=_number(day_values["volume"], "day_profile.volume", 0.0, 2.0),
     )
+    try:
+        calibration = (
+            hardware_calibration_from_payload(values["calibration"])
+            if version >= 3
+            else calibration_defaults.validated()
+        )
+    except CalibrationConfigError as error:
+        raise SettingsConfigError(str(error)) from error
     return OperatorSettings(
         personality=personality,
         motion_enabled=_boolean(values["motion_enabled"], "motion_enabled"),
@@ -155,6 +177,7 @@ def settings_from_payload(payload: Any) -> OperatorSettings:
             if version >= 2
             else False
         ),
+        calibration=calibration,
         updated_at=updated_at,
     )
 
@@ -162,8 +185,16 @@ def settings_from_payload(payload: Any) -> OperatorSettings:
 class OperatorSettingsStore:
     """Load and atomically replace one bounded JSON settings document."""
 
-    def __init__(self, path: os.PathLike[str] | str) -> None:
+    def __init__(
+        self,
+        path: os.PathLike[str] | str,
+        calibration_defaults: HardwareCalibration = DEFAULT_HARDWARE_CALIBRATION,
+    ) -> None:
         self.path = Path(path)
+        try:
+            self.calibration_defaults = calibration_defaults.validated()
+        except CalibrationConfigError as error:
+            raise SettingsConfigError(str(error)) from error
 
     def load(self) -> Optional[OperatorSettings]:
         try:
@@ -181,7 +212,7 @@ class OperatorSettingsStore:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise SettingsConfigError(f"cannot parse saved settings: {error}") from error
-        return settings_from_payload(payload)
+        return settings_from_payload(payload, self.calibration_defaults)
 
     def save(self, settings: OperatorSettings) -> OperatorSettings:
         updated = replace(
