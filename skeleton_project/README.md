@@ -11,6 +11,7 @@ The service uses a serialized event controller: MQTT and PIR callbacks only enqu
 ```text
 skeleton_all_in_one_mqtt.py  service composition and hardware integrations
 holiday_skeleton/
+  calibration.py            validated staged hardware-calibration workflow
   controller.py              event queue and runtime states
   audio.py                   preroll, speech gate, and endpoint timing
   barge_in.py                echo-aware interruption command monitor
@@ -28,7 +29,7 @@ holiday_skeleton/
 tests/                       hardware-free unit tests
 ```
 
-Runtime states published to `holiday/skeleton/status` are `starting`, `idle`, `maintenance`, `idle_life`, `scene`, `self_test`, `content_reload`, `greeting`, `listening`, `thinking`, `speaking`, `effect`, `cooldown`, `stopping`, and `error`.
+Runtime states published to `holiday/skeleton/status` are `starting`, `idle`, `maintenance`, `calibration`, `idle_life`, `scene`, `self_test`, `content_reload`, `greeting`, `listening`, `thinking`, `speaking`, `effect`, `cooldown`, `stopping`, and `error`.
 
 ## Hardware (quick)
 - **Raspberry Pi** (Bookworm OK)
@@ -77,6 +78,30 @@ views:
           - entity: text.skeleton_say
           - entity: text.skeleton_play_scene
           - entity: button.skeleton_stop_scene
+      - type: entities
+        title: Guided Hardware Calibration
+        entities:
+          - entity: binary_sensor.skeleton_calibration_active
+          - entity: sensor.skeleton_calibration_state
+          - entity: select.skeleton_calibration_step
+          - entity: sensor.skeleton_calibration_instruction
+          - entity: button.skeleton_start_calibration
+          - entity: number.skeleton_calibration_jaw_rest
+          - entity: number.skeleton_calibration_jaw_max
+          - entity: switch.skeleton_calibration_eyes_inverted
+          - entity: number.skeleton_calibration_eyes_dim
+          - entity: number.skeleton_calibration_eyes_full
+          - entity: number.skeleton_calibration_microphone_gate
+          - entity: number.skeleton_calibration_speaker_volume
+          - entity: number.skeleton_calibration_pir_hold
+          - entity: number.skeleton_calibration_pir_cooldown
+          - entity: button.skeleton_preview_calibration_step
+          - entity: button.skeleton_next_calibration_step
+          - entity: button.skeleton_save_calibration
+          - entity: button.skeleton_cancel_calibration
+          - entity: sensor.skeleton_calibration_last_preview
+          - entity: sensor.skeleton_calibration_last_result
+          - entity: sensor.skeleton_calibration_last_error
       - type: entities
         title: Status
         entities:
@@ -173,6 +198,9 @@ Environment="PERSONALITY=pirate"
 Environment="PERSIST_SETTINGS_ENABLED=1"
 Environment="PERSIST_SETTINGS_PATH=/var/lib/holiday-skeleton/operator-settings.json"
 Environment="MAINTENANCE_MODE=0"
+Environment="CALIBRATION_ENABLED=1"
+Environment="CALIBRATION_PREVIEW_SEC=0.6"
+Environment="CALIBRATION_MIC_SAMPLE_SEC=1.5"
 Environment="HEALTH_INTERVAL_SEC=30"
 Environment="HEALTH_LATENCY_WINDOW=20"
 Environment="HEALTH_TEMP_WARN_C=75"
@@ -327,7 +355,8 @@ With `PERSIST_SETTINGS_ENABLED=1` (the default), Home Assistant changes survive 
 - night-mode state;
 - maintenance lockout state;
 - current eye levels and volume; and
-- the daytime eye/volume profile needed to leave night mode correctly.
+- the daytime eye/volume profile needed to leave night mode correctly; and
+- jaw rest/max travel, eye polarity, microphone gate, and PIR timing calibration.
 
 Visitor audio, recognized text, transcripts, conversation memory, prompts, broker details, passwords, and other credentials are never written to this file. Conversation memory remains visit-scoped and RAM-only.
 
@@ -335,7 +364,7 @@ The controller writes a complete temporary JSON document with `0600` permissions
 
 Saved operator values take precedence over their corresponding environment defaults after the first successful Home Assistant change. `sensor.skeleton_saved_settings_state` reports `empty`, `restored`, `saved`, `disabled`, or `error`; the last-save and last-error sensors provide deployment diagnostics. To return to environment defaults, stop the service, move the JSON file to a backup name, and start the service again.
 
-Version-1 settings files are accepted and migrated with maintenance mode safely defaulted to off. New saves use version 2.
+Version-1 settings files are accepted with maintenance mode safely defaulted to off. Version-1 and version-2 files inherit the current hardware values from the systemd environment on their first load. New saves use version 3 and include the validated hardware calibration.
 
 ## Maintenance lockout
 
@@ -344,6 +373,23 @@ Turn on `switch.skeleton_maintenance_mode` before working on the hanging prop, s
 While locked, PIR activity is still reported but cannot start a visit. Home Assistant speech, scene, blink, flicker, manual-motion, personality-scene, and self-test commands are rejected instead of being delayed until unlock. Brightness, volume, motion/idle enable values, night mode, personality selection, transactional content reload, restart, and unlock remain available because they do not intentionally actuate the prop; brightness changes are saved but the physical eyes remain off.
 
 The lockout persists through normal service and Pi restarts when operator persistence is enabled. If the state file cannot be written, the live lock remains active and Home Assistant reports `locked_unsaved`; a later restart then uses the configured `MAINTENANCE_MODE` default. Invalid MQTT values cannot unlock the prop. Home Assistant also exposes lock state, last result/error, state-change time, and rejected-command count. Maintenance mode is an operating interlock, not an electrical disconnect—remove power before placing hands in a mechanism that could be energized by wiring faults or independent hardware.
+
+## Guided hardware calibration
+
+The **Guided Hardware Calibration** Home Assistant card stages and verifies the installation-specific values that otherwise require editing a systemd override: closed and maximum jaw travel, eye polarity and dim/full levels, microphone energy gate, speaker level, PIR hold time, and visitor cooldown. It never starts automatically.
+
+1. Keep clear of the mechanism, turn off Night Mode, and enable Maintenance Mode.
+2. Press **Start Calibration**. The current live values become a private in-memory draft; no output moves.
+3. Select a step, adjust its dedicated control, and press **Preview Calibration Step**. **Next Calibration Step** walks through the recommended order.
+4. Press **Save Calibration** only after all nine steps are valid, or **Cancel Calibration** to discard the complete draft.
+
+Jaw previews move directly to the staged fraction for at most `CALIBRATION_PREVIEW_SEC` and then return to the previously active rest position. Increase maximum travel gradually and stop before the linkage binds. Eye-level previews are capped at 35% logical brightness; the polarity preview uses 20%. The normal maintenance interlock remains authoritative for every non-calibration command while these narrowly scoped preview writes run.
+
+The microphone step samples ambient input for `CALIBRATION_MIC_SAMPLE_SEC`, reports the 95th-percentile RMS and a recommended energy gate, but does not silently overwrite the staged value. The speaker step uses the streaming Piper path at the staged level with the jaw held at rest. PIR previews report the live sensor state and staged timing without starting a visit.
+
+Save validates the complete jaw separation, eye ordering, finite numeric bounds, and timing ranges, then writes one complete version-3 operator-settings document using the existing `0600`, `fsync`, and atomic-replace path. Only after that write succeeds do the live values and streaming jaw bounds change. A failed write leaves both the active calibration and the staged session unchanged so it can be retried. Unlocking Maintenance Mode, cancelling, restarting, or shutting down abandons the draft and restores safe outputs.
+
+Calibration is an operating aid, not a substitute for disconnecting servo and LED power while changing wiring or linkage geometry.
 
 ## Scene engine
 

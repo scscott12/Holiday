@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from holiday_skeleton.calibration import CALIBRATION_STEPS
+
 
 DiscoveryMessage = Tuple[str, Optional[Dict[str, Any]]]
 
@@ -21,6 +23,7 @@ def discovery_messages(
     personality_options = list(dict.fromkeys(
         str(name).strip().lower() for name in personality_names if str(name).strip()
     )) or ["legacy"]
+    calibration_options = [step.value for step in CALIBRATION_STEPS]
     device = {
         "identifiers": [f"holiday_{device_name}"],
         "name": title,
@@ -280,6 +283,165 @@ def discovery_messages(
         "uniq_id": f"holiday_{device_name}_maintenance_rejected_count",
         "stat_t": f"{base}/maintenance/rejected_count",
         "state_class": "total_increasing",
+    })
+    add("binary_sensor", "calibration_active", {
+        "name": f"{title} Calibration Active",
+        "uniq_id": f"holiday_{device_name}_calibration_active",
+        "stat_t": f"{base}/calibration/active",
+        "pl_on": "ON", "pl_off": "OFF",
+    })
+    add("sensor", "calibration_state", {
+        "name": f"{title} Calibration State",
+        "uniq_id": f"holiday_{device_name}_calibration_state",
+        "stat_t": f"{base}/calibration/state",
+        "icon": "mdi:tune-variant",
+    })
+    add("sensor", "calibration_step", {
+        "name": f"{title} Calibration Current Step",
+        "uniq_id": f"holiday_{device_name}_calibration_current_step",
+        "stat_t": f"{base}/calibration/step",
+    })
+    add("sensor", "calibration_instruction", {
+        "name": f"{title} Calibration Instruction",
+        "uniq_id": f"holiday_{device_name}_calibration_instruction",
+        "stat_t": f"{base}/calibration/instruction",
+    })
+    add("sensor", "calibration_last_result", {
+        "name": f"{title} Calibration Last Result",
+        "uniq_id": f"holiday_{device_name}_calibration_last_result",
+        "stat_t": f"{base}/calibration/last_result",
+    })
+    add("sensor", "calibration_last_error", {
+        "name": f"{title} Calibration Last Error",
+        "uniq_id": f"holiday_{device_name}_calibration_last_error",
+        "stat_t": f"{base}/calibration/last_error",
+    })
+    add("sensor", "calibration_last_preview", {
+        "name": f"{title} Calibration Last Preview",
+        "uniq_id": f"holiday_{device_name}_calibration_last_preview",
+        "stat_t": f"{base}/calibration/last_preview",
+    })
+    add("sensor", "calibration_last_saved", {
+        "name": f"{title} Calibration Last Saved",
+        "uniq_id": f"holiday_{device_name}_calibration_last_saved",
+        "stat_t": f"{base}/calibration/last_saved",
+    })
+    add("sensor", "calibration_save_count", {
+        "name": f"{title} Calibration Save Count",
+        "uniq_id": f"holiday_{device_name}_calibration_save_count",
+        "stat_t": f"{base}/calibration/save_count",
+        "state_class": "total_increasing",
+    })
+    add("sensor", "calibration_preview_count", {
+        "name": f"{title} Calibration Preview Count",
+        "uniq_id": f"holiday_{device_name}_calibration_preview_count",
+        "stat_t": f"{base}/calibration/preview_count",
+        "state_class": "total_increasing",
+    })
+    add("select", "calibration_step_select", {
+        "name": f"{title} Calibration Step",
+        "uniq_id": f"holiday_{device_name}_calibration_step_select",
+        "cmd_t": f"{base}/calibration/step/set",
+        "stat_t": f"{base}/calibration/step",
+        "options": calibration_options,
+    })
+    add("number", "calibration_jaw_rest", {
+        "name": f"{title} Calibration Jaw Rest",
+        "uniq_id": f"holiday_{device_name}_calibration_jaw_rest",
+        "cmd_t": f"{base}/calibration/jaw_rest/set",
+        "stat_t": f"{base}/calibration/jaw_rest",
+        "min": 0, "max": 70, "step": 1, "mode": "slider",
+        "unit_of_measurement": "%",
+    })
+    add("number", "calibration_jaw_max", {
+        "name": f"{title} Calibration Jaw Max",
+        "uniq_id": f"holiday_{device_name}_calibration_jaw_max",
+        "cmd_t": f"{base}/calibration/jaw_max/set",
+        "stat_t": f"{base}/calibration/jaw_max",
+        "min": 10, "max": 100, "step": 1, "mode": "slider",
+        "unit_of_measurement": "%",
+    })
+    add("switch", "calibration_eyes_inverted", {
+        "name": f"{title} Calibration Eyes Inverted",
+        "uniq_id": f"holiday_{device_name}_calibration_eyes_inverted",
+        "cmd_t": f"{base}/calibration/eyes_inverted/set",
+        "stat_t": f"{base}/calibration/eyes_inverted",
+        "pl_on": "ON", "pl_off": "OFF",
+    })
+    add("number", "calibration_eyes_dim", {
+        "name": f"{title} Calibration Eyes Dim",
+        "uniq_id": f"holiday_{device_name}_calibration_eyes_dim",
+        "cmd_t": f"{base}/calibration/eyes_dim/set",
+        "stat_t": f"{base}/calibration/eyes_dim",
+        "min": 0, "max": 100, "step": 1, "mode": "slider",
+        "unit_of_measurement": "%",
+    })
+    add("number", "calibration_eyes_full", {
+        "name": f"{title} Calibration Eyes Full",
+        "uniq_id": f"holiday_{device_name}_calibration_eyes_full",
+        "cmd_t": f"{base}/calibration/eyes_full/set",
+        "stat_t": f"{base}/calibration/eyes_full",
+        "min": 0, "max": 100, "step": 1, "mode": "slider",
+        "unit_of_measurement": "%",
+    })
+    add("number", "calibration_microphone_gate", {
+        "name": f"{title} Calibration Microphone Gate",
+        "uniq_id": f"holiday_{device_name}_calibration_microphone_gate",
+        "cmd_t": f"{base}/calibration/microphone_gate/set",
+        "stat_t": f"{base}/calibration/microphone_gate",
+        "min": 25, "max": 5000, "step": 25, "mode": "box",
+        "unit_of_measurement": "RMS",
+    })
+    add("number", "calibration_speaker_volume", {
+        "name": f"{title} Calibration Speaker Volume",
+        "uniq_id": f"holiday_{device_name}_calibration_speaker_volume",
+        "cmd_t": f"{base}/calibration/speaker_volume/set",
+        "stat_t": f"{base}/calibration/speaker_volume",
+        "min": 0, "max": 200, "step": 5, "mode": "slider",
+        "unit_of_measurement": "%",
+    })
+    add("number", "calibration_pir_hold", {
+        "name": f"{title} Calibration PIR Hold",
+        "uniq_id": f"holiday_{device_name}_calibration_pir_hold",
+        "cmd_t": f"{base}/calibration/pir_hold/set",
+        "stat_t": f"{base}/calibration/pir_hold",
+        "min": 0.1, "max": 5, "step": 0.1, "mode": "box",
+        "unit_of_measurement": "s",
+    })
+    add("number", "calibration_pir_cooldown", {
+        "name": f"{title} Calibration PIR Cooldown",
+        "uniq_id": f"holiday_{device_name}_calibration_pir_cooldown",
+        "cmd_t": f"{base}/calibration/pir_cooldown/set",
+        "stat_t": f"{base}/calibration/pir_cooldown",
+        "min": 1, "max": 120, "step": 1, "mode": "box",
+        "unit_of_measurement": "s",
+    })
+    add("button", "calibration_start", {
+        "name": f"{title} Start Calibration",
+        "uniq_id": f"holiday_{device_name}_calibration_start",
+        "cmd_t": f"{base}/calibration/start/set",
+        "icon": "mdi:tune-variant",
+    })
+    add("button", "calibration_preview", {
+        "name": f"{title} Preview Calibration Step",
+        "uniq_id": f"holiday_{device_name}_calibration_preview",
+        "cmd_t": f"{base}/calibration/preview/set",
+    })
+    add("button", "calibration_next", {
+        "name": f"{title} Next Calibration Step",
+        "uniq_id": f"holiday_{device_name}_calibration_next",
+        "cmd_t": f"{base}/calibration/next/set",
+    })
+    add("button", "calibration_save", {
+        "name": f"{title} Save Calibration",
+        "uniq_id": f"holiday_{device_name}_calibration_save",
+        "cmd_t": f"{base}/calibration/save/set",
+        "icon": "mdi:content-save-check",
+    })
+    add("button", "calibration_cancel", {
+        "name": f"{title} Cancel Calibration",
+        "uniq_id": f"holiday_{device_name}_calibration_cancel",
+        "cmd_t": f"{base}/calibration/cancel/set",
     })
     add("binary_sensor", "self_test_active", {
         "name": f"{title} Self-Test Active",

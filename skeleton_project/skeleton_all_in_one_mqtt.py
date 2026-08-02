@@ -19,6 +19,15 @@ from holiday_skeleton.brain import (
     OllamaStreamingClient,
     normalize_ollama_chat_url,
 )
+from holiday_skeleton.calibration import (
+    CALIBRATION_STEPS,
+    CalibrationConfigError,
+    CalibrationSession,
+    CalibrationStep,
+    CalibrationValues,
+    DEFAULT_HARDWARE_CALIBRATION,
+    HardwareCalibration,
+)
 from holiday_skeleton.content import (
     ContentReloadError,
     ContentReloadInterrupted,
@@ -178,6 +187,14 @@ SELF_TEST_JAW_FRAC = float(envs("SELF_TEST_JAW_FRAC","0.20"))
 SELF_TEST_STEP_SEC = float(envs("SELF_TEST_STEP_SEC","0.35"))
 SELF_TEST_LINE = envs("SELF_TEST_LINE","Systems awake and ready.").strip()[:160]
 
+CALIBRATION_ENABLED = envs("CALIBRATION_ENABLED","1").strip().lower() in ("1","true","yes","on")
+CALIBRATION_PREVIEW_SEC = clamp(float(envs("CALIBRATION_PREVIEW_SEC","0.6")),0.2,2.0)
+CALIBRATION_MIC_SAMPLE_SEC = clamp(float(envs("CALIBRATION_MIC_SAMPLE_SEC","1.5")),0.5,5.0)
+CALIBRATION_LINE = envs(
+    "CALIBRATION_LINE",
+    "Calibration check. Adjust the speaker until this voice is clear.",
+).strip()[:160]
+
 VOSK_RATE        = int(envs("VOSK_RATE","16000"))
 SD_BLOCKSIZE     = int(envs("SD_BLOCKSIZE","1024"))
 ENERGY_GATE      = float(envs("ENERGY_GATE","180"))
@@ -303,6 +320,40 @@ _self_test_count=0
 _self_test_interrupted=0
 _self_test_report="{}"
 
+_calibration_session=CalibrationSession()
+_calibration_state="starting"
+_calibration_last_result="never"
+_calibration_last_error="none"
+_calibration_last_preview="none"
+_calibration_last_saved="never"
+_calibration_save_count=0
+_calibration_preview_count=0
+_calibration_volume_override=None
+
+def _configured_hardware_calibration():
+    try:
+        if EYES_INVERT not in (0,1):
+            raise CalibrationConfigError("EYES_INVERT must be 0 or 1")
+        return HardwareCalibration(
+            jaw_rest=JAW_REST_FRAC,
+            jaw_max=JAW_MAX_FRAC,
+            eyes_inverted=bool(EYES_INVERT),
+            microphone_gate=ENERGY_GATE,
+            pir_hold_seconds=MOTION_HOLD_SEC,
+            pir_cooldown_seconds=MOTION_COOLDOWN_SEC,
+        ).validated()
+    except CalibrationConfigError as error:
+        print(f"[calibration] invalid environment defaults: {error}; using safe defaults")
+        return DEFAULT_HARDWARE_CALIBRATION
+
+_calibration_configured_defaults=_configured_hardware_calibration()
+JAW_REST_FRAC=_calibration_configured_defaults.jaw_rest
+JAW_MAX_FRAC=_calibration_configured_defaults.jaw_max
+EYES_INVERT=1 if _calibration_configured_defaults.eyes_inverted else 0
+ENERGY_GATE=_calibration_configured_defaults.microphone_gate
+MOTION_HOLD_SEC=_calibration_configured_defaults.pir_hold_seconds
+MOTION_COOLDOWN_SEC=_calibration_configured_defaults.pir_cooldown_seconds
+
 maintenance_mode=MAINTENANCE_MODE_DEFAULT
 _maintenance_state="starting"
 _maintenance_last_result="never"
@@ -360,6 +411,8 @@ def _canned_speech_lines(pack=None):
         )
     if SELF_TEST_ENABLED and SELF_TEST_LINE:
         configured.append(SELF_TEST_LINE)
+    if CALIBRATION_ENABLED and CALIBRATION_LINE:
+        configured.append(CALIBRATION_LINE)
     return list(dict.fromkeys(configured))
 
 def _personality_names():
@@ -548,10 +601,72 @@ def _maintenance_topic_action(topic):
     }
     return next((label for suffix,label in blocked.items() if topic.endswith(suffix)),None)
 
+def _calibration_mqtt_command(topic,payload):
+    if not topic.startswith(f"{MQTT_BASE}/calibration/"):
+        return False
+    suffix=topic[len(f"{MQTT_BASE}/calibration/"):]
+    actions={
+        "start/set":"start",
+        "preview/set":"preview",
+        "next/set":"next",
+        "save/set":"save",
+        "cancel/set":"cancel",
+    }
+    if suffix in actions:
+        _request_calibration_command(actions[suffix])
+        return True
+    if suffix=="step/set":
+        _request_calibration_command("select",step=payload.strip().lower())
+        return True
+    fields={
+        "jaw_rest/set":(CalibrationStep.JAW_REST,0.01),
+        "jaw_max/set":(CalibrationStep.JAW_MAX,0.01),
+        "eyes_dim/set":(CalibrationStep.EYES_DIM,0.01),
+        "eyes_full/set":(CalibrationStep.EYES_FULL,0.01),
+        "microphone_gate/set":(CalibrationStep.MICROPHONE_GATE,1.0),
+        "speaker_volume/set":(CalibrationStep.SPEAKER_VOLUME,0.01),
+        "pir_hold/set":(CalibrationStep.PIR_HOLD,1.0),
+        "pir_cooldown/set":(CalibrationStep.PIR_COOLDOWN,1.0),
+    }
+    if suffix in fields:
+        step,multiplier=fields[suffix]
+        try:
+            number=float(payload)
+            if not math.isfinite(number): raise ValueError("not finite")
+        except (TypeError,ValueError):
+            _record_calibration_result("error",f"invalid {step.value} value")
+            return True
+        _request_calibration_command("set",step=step.value,value=number*multiplier)
+        return True
+    if suffix=="eyes_inverted/set":
+        value=_maintenance_value(payload)
+        if value is None:
+            _record_calibration_result("error","eye polarity must be ON or OFF")
+        else:
+            _request_calibration_command(
+                "set",
+                step=CalibrationStep.EYES_INVERTED.value,
+                value=value,
+            )
+        return True
+    _record_calibration_result("error",f"unknown calibration topic {suffix}")
+    return True
+
 def _on_message(client,userdata,msg):
     t=msg.topic; p=msg.payload.decode("utf-8","ignore").strip()
     if t.endswith("/maintenance/set"):
         _request_maintenance_mode(p)
+        return
+    if _calibration_mqtt_command(t,p):
+        return
+    if (
+        _calibration_session.active
+        and not t.endswith("/restart/set")
+    ):
+        _record_calibration_result(
+            "busy",
+            "save or cancel the active calibration before using other controls",
+        )
         return
     blocked_action=_maintenance_topic_action(t)
     if _maintenance_stop_requested() and blocked_action:
@@ -614,7 +729,15 @@ def _on_connect(client,userdata,flags,rc,properties=None):
               "scene/play/set","scene/stop/set","personality/set",
               "personality/default_scene/play/set","self_test/run/set",
               "self_test/stop/set","content/reload/set","night_mode/set",
-              "maintenance/set","restart/set"]
+              "maintenance/set","restart/set","calibration/start/set",
+              "calibration/preview/set","calibration/next/set",
+              "calibration/save/set","calibration/cancel/set",
+              "calibration/step/set","calibration/jaw_rest/set",
+              "calibration/jaw_max/set","calibration/eyes_inverted/set",
+              "calibration/eyes_dim/set","calibration/eyes_full/set",
+              "calibration/microphone_gate/set",
+              "calibration/speaker_volume/set","calibration/pir_hold/set",
+              "calibration/pir_cooldown/set"]
         for path in subs:
             try: client.subscribe(f"{MQTT_BASE}/{path}")
             except Exception as e: print("[mqtt subscribe]",e)
@@ -627,6 +750,7 @@ def _on_connect(client,userdata,flags,rc,properties=None):
         _publish_settings_state()
         _publish_self_test_state()
         _publish_content_reload_state()
+        _publish_calibration_state()
         _publish_watchdog_snapshot()
         if _health is not None: _health.publish_now(sample=False)
     else:
@@ -787,6 +911,8 @@ def _amplify_wav_inplace(path:str, volume:float):
     except Exception as e: print("[volume]",e)
 
 def _speech_volume():
+    if _calibration_volume_override is not None:
+        return clamp(_calibration_volume_override,0.0,2.0)
     return clamp(VOLUME*PERSONALITY_VOLUME_MULTIPLIER,0.0,2.0)
 
 _speech_lock=threading.Lock()
@@ -1332,6 +1458,25 @@ def _day_profile():
         volume=VOLUME,
     )
 
+def _current_hardware_calibration():
+    return HardwareCalibration(
+        jaw_rest=JAW_REST_FRAC,
+        jaw_max=JAW_MAX_FRAC,
+        eyes_inverted=bool(EYES_INVERT),
+        microphone_gate=ENERGY_GATE,
+        pir_hold_seconds=MOTION_HOLD_SEC,
+        pir_cooldown_seconds=MOTION_COOLDOWN_SEC,
+    ).validated()
+
+def _current_calibration_values():
+    profile=_day_profile()
+    return CalibrationValues(
+        hardware=_current_hardware_calibration(),
+        eyes_dim=profile.eyes_dim,
+        eyes_full=profile.eyes_full,
+        speaker_volume=profile.volume,
+    ).validated()
+
 def _current_operator_settings():
     return OperatorSettings(
         personality=_personality_active_name(),
@@ -1343,12 +1488,15 @@ def _current_operator_settings():
         volume=clamp(float(VOLUME),0.0,2.0),
         day_profile=_day_profile(),
         maintenance_mode=bool(maintenance_mode),
+        calibration=_current_hardware_calibration(),
     )
 
 def _apply_restored_settings(settings):
     global PERSONALITY_REQUESTED,motion_enabled,IDLE_LIFE_ENABLED,night_mode
     global maintenance_mode
     global EYES_LISTEN_FRAC,EYES_SPEAK_FRAC,VOLUME,_day
+    global JAW_REST_FRAC,JAW_MAX_FRAC,EYES_INVERT,ENERGY_GATE
+    global MOTION_HOLD_SEC,MOTION_COOLDOWN_SEC
     PERSONALITY_REQUESTED=settings.personality
     motion_enabled=settings.motion_enabled
     IDLE_LIFE_ENABLED=settings.idle_life_enabled
@@ -1357,6 +1505,12 @@ def _apply_restored_settings(settings):
     EYES_LISTEN_FRAC=settings.eyes_dim
     EYES_SPEAK_FRAC=settings.eyes_full
     VOLUME=settings.volume
+    JAW_REST_FRAC=settings.calibration.jaw_rest
+    JAW_MAX_FRAC=settings.calibration.jaw_max
+    EYES_INVERT=1 if settings.calibration.eyes_inverted else 0
+    ENERGY_GATE=settings.calibration.microphone_gate
+    MOTION_HOLD_SEC=settings.calibration.pir_hold_seconds
+    MOTION_COOLDOWN_SEC=settings.calibration.pir_cooldown_seconds
     _day={
         "listen":settings.day_profile.eyes_dim if night_mode else None,
         "speak":settings.day_profile.eyes_full if night_mode else None,
@@ -1372,7 +1526,10 @@ def _init_persistent_settings():
         _health_set("settings",ComponentState.DISABLED,"disabled by configuration")
         _publish_settings_state()
         return
-    _settings_store=OperatorSettingsStore(PERSIST_SETTINGS_PATH)
+    _settings_store=OperatorSettingsStore(
+        PERSIST_SETTINGS_PATH,
+        calibration_defaults=_calibration_configured_defaults,
+    )
     try:
         settings=_settings_store.load()
         _settings_loaded=settings
@@ -1394,12 +1551,14 @@ def _init_persistent_settings():
         print(f"[settings] {error}; using configured defaults")
     _publish_settings_state()
 
-def _persist_operator_settings():
+def _persist_operator_settings(settings=None):
     global _settings_loaded,_settings_state,_settings_last_saved
     global _settings_last_error,_settings_save_count
     if _settings_store is None: return False
     try:
-        saved=_settings_store.save(_current_operator_settings())
+        saved=_settings_store.save(
+            _current_operator_settings() if settings is None else settings
+        )
         _settings_loaded=saved
         _settings_state="saved"; _settings_last_saved=saved.updated_at
         _settings_last_error="none"; _settings_save_count+=1
@@ -1514,6 +1673,8 @@ def _set_maintenance_mode(payload):
     if want is None:
         _record_maintenance_result("error","maintenance value must be ON or OFF")
         return
+    if not want and _calibration_session.active:
+        _cancel_calibration("maintenance mode was unlocked")
     changed=want != maintenance_mode
     maintenance_mode=want
     if controller is not None:
@@ -1551,6 +1712,353 @@ def _set_maintenance_mode(payload):
                 else "settings persistence disabled; restart uses configured default"
             )
             _publish_maintenance_state()
+
+def _publish_calibration_state():
+    try:
+        values=(
+            _calibration_session.staged
+            if _calibration_session.active
+            else _current_calibration_values()
+        )
+    except Exception:
+        values=CalibrationValues(
+            hardware=_calibration_configured_defaults,
+            eyes_dim=clamp(EYES_LISTEN_FRAC,0.0,1.0),
+            eyes_full=clamp(EYES_SPEAK_FRAC,0.0,1.0),
+            speaker_volume=clamp(VOLUME,0.0,2.0),
+        )
+    step=(
+        _calibration_session.step
+        if _calibration_session.active
+        else CALIBRATION_STEPS[0]
+    )
+    instruction=(
+        _calibration_session.instruction
+        if _calibration_session.active
+        else "Enable Maintenance Mode, turn off Night Mode, then press Start Calibration."
+    )
+    mqtt_pub("calibration/active","ON" if _calibration_session.active else "OFF",retain=True)
+    mqtt_pub("calibration/state",_calibration_state,retain=True)
+    mqtt_pub("calibration/step",step.value,retain=True)
+    mqtt_pub("calibration/instruction",instruction,retain=True)
+    mqtt_pub("calibration/last_result",_calibration_last_result,retain=True)
+    mqtt_pub("calibration/last_error",_calibration_last_error,retain=True)
+    mqtt_pub("calibration/last_preview",_calibration_last_preview,retain=True)
+    mqtt_pub("calibration/last_saved",_calibration_last_saved,retain=True)
+    mqtt_pub("calibration/save_count",str(_calibration_save_count),retain=True)
+    mqtt_pub("calibration/preview_count",str(_calibration_preview_count),retain=True)
+    mqtt_pub("calibration/jaw_rest",f"{100.0*values.hardware.jaw_rest:.1f}",retain=True)
+    mqtt_pub("calibration/jaw_max",f"{100.0*values.hardware.jaw_max:.1f}",retain=True)
+    mqtt_pub("calibration/eyes_inverted","ON" if values.hardware.eyes_inverted else "OFF",retain=True)
+    mqtt_pub("calibration/eyes_dim",f"{100.0*values.eyes_dim:.1f}",retain=True)
+    mqtt_pub("calibration/eyes_full",f"{100.0*values.eyes_full:.1f}",retain=True)
+    mqtt_pub("calibration/microphone_gate",f"{values.hardware.microphone_gate:.1f}",retain=True)
+    mqtt_pub("calibration/speaker_volume",f"{100.0*values.speaker_volume:.1f}",retain=True)
+    mqtt_pub("calibration/pir_hold",f"{values.hardware.pir_hold_seconds:.2f}",retain=True)
+    mqtt_pub("calibration/pir_cooldown",f"{values.hardware.pir_cooldown_seconds:.1f}",retain=True)
+
+def _record_calibration_result(result,error="none",state=None):
+    global _calibration_state,_calibration_last_result,_calibration_last_error
+    _calibration_last_result=str(result)
+    _calibration_last_error=str(error or "none")[:255]
+    if state is not None:
+        _calibration_state=str(state)
+    _publish_calibration_state()
+
+def _init_calibration():
+    global _calibration_state,_calibration_last_result,_calibration_last_error
+    global _calibration_last_saved
+    if not CALIBRATION_ENABLED:
+        _calibration_state="disabled"
+        _calibration_last_result="disabled"
+        _calibration_last_error="none"
+        _health_set("calibration",ComponentState.DISABLED,"disabled by configuration")
+    else:
+        _calibration_state="ready"
+        _calibration_last_result="ready"
+        _calibration_last_error="none"
+        if _settings_loaded is not None:
+            _calibration_last_saved=_settings_loaded.updated_at
+        _health_set("calibration",ComponentState.READY,"maintenance-only calibration ready")
+    _publish_calibration_state()
+
+def _calibration_raw_jaw(frac):
+    if not maintenance_mode or not _calibration_session.active:
+        raise CalibrationConfigError("jaw preview requires an active maintenance calibration")
+    if _jaw is None:
+        raise CalibrationConfigError("PCA9685 jaw servo is unavailable")
+    _jaw.fraction=clamp(float(frac),0.0,1.0)
+
+def _calibration_raw_eyes(level,inverted):
+    if not maintenance_mode or not _calibration_session.active:
+        raise CalibrationConfigError("eye preview requires an active maintenance calibration")
+    if _eyes_ch is None:
+        raise CalibrationConfigError("PCA9685 eye output is unavailable")
+    logical=clamp(float(level),0.0,1.0)
+    physical=1.0-logical if bool(inverted) else logical
+    with _eyes_lock:
+        _eyes_ch.duty_cycle=int(0xFFFF*physical)
+
+def _calibration_safe_outputs():
+    if not _calibration_session.active:
+        return
+    try:
+        if _jaw is not None:
+            _jaw.fraction=clamp(JAW_REST_FRAC,0.0,1.0)
+    except Exception as error:
+        print(f"[calibration] jaw cleanup failed: {error}")
+    try:
+        if _eyes_ch is not None:
+            physical=1.0 if EYES_INVERT else 0.0
+            with _eyes_lock:
+                _eyes_ch.duty_cycle=int(0xFFFF*physical)
+    except Exception as error:
+        print(f"[calibration] eye cleanup failed: {error}")
+
+def _calibration_wait(seconds):
+    deadline=time.monotonic()+max(0.0,float(seconds))
+    while time.monotonic()<deadline:
+        if controller is not None:
+            controller.heartbeat()
+            if controller.stop_event.is_set():
+                raise CalibrationConfigError("calibration interrupted by shutdown")
+        time.sleep(min(0.02,max(0.0,deadline-time.monotonic())))
+
+def _calibration_sample_microphone():
+    if sd is None or in_idx is None:
+        raise CalibrationConfigError("microphone input is unavailable")
+    samples=[]
+    audio_queue=queue.Queue(maxsize=128)
+    def callback(indata,frames,time_info,status):
+        try: audio_queue.put_nowait(bytes(indata))
+        except queue.Full: pass
+    deadline=time.monotonic()+CALIBRATION_MIC_SAMPLE_SEC
+    try:
+        stream=sd.RawInputStream(
+            samplerate=44100,
+            blocksize=SD_BLOCKSIZE,
+            device=in_idx,
+            dtype="int16",
+            channels=1,
+            callback=callback,
+        )
+        with stream:
+            while time.monotonic()<deadline:
+                if controller is not None:
+                    controller.heartbeat()
+                    if controller.stop_event.is_set():
+                        raise CalibrationConfigError("microphone preview interrupted by shutdown")
+                try: raw=audio_queue.get(timeout=0.10)
+                except queue.Empty: continue
+                values=np.frombuffer(raw,dtype=np.int16).astype(np.float32)
+                if values.size:
+                    samples.append(float(np.sqrt(np.mean(values*values))))
+    except CalibrationConfigError:
+        raise
+    except Exception as error:
+        raise CalibrationConfigError(f"microphone sampling failed: {error}") from error
+    if not samples:
+        raise CalibrationConfigError("microphone sampling produced no audio frames")
+    observed=float(np.percentile(np.asarray(samples,dtype=np.float32),95))
+    recommended=clamp(max(25.0,observed*1.8+20.0),25.0,5000.0)
+    return observed,recommended
+
+def _preview_calibration():
+    global _calibration_volume_override
+    values=_calibration_session.validated()
+    step=_calibration_session.step
+    try:
+        if step is CalibrationStep.JAW_REST:
+            _calibration_raw_jaw(values.hardware.jaw_rest)
+            _calibration_wait(CALIBRATION_PREVIEW_SEC)
+            return f"jaw rest previewed at {100.0*values.hardware.jaw_rest:.1f}% travel"
+        if step is CalibrationStep.JAW_MAX:
+            _calibration_raw_jaw(values.hardware.jaw_max)
+            _calibration_wait(CALIBRATION_PREVIEW_SEC)
+            return f"jaw maximum previewed at {100.0*values.hardware.jaw_max:.1f}% travel"
+        if step is CalibrationStep.EYES_INVERTED:
+            _calibration_raw_eyes(0.2,values.hardware.eyes_inverted)
+            _calibration_wait(CALIBRATION_PREVIEW_SEC)
+            polarity="inverted" if values.hardware.eyes_inverted else "normal"
+            return f"eye polarity previewed as {polarity} at 20% logical output"
+        if step in (CalibrationStep.EYES_DIM,CalibrationStep.EYES_FULL):
+            requested=float(values.value_for(step))
+            preview=min(requested,0.35)
+            _calibration_raw_eyes(preview,values.hardware.eyes_inverted)
+            _calibration_wait(CALIBRATION_PREVIEW_SEC)
+            suffix="; capped at 35%" if requested>preview else ""
+            return f"{step.value} previewed at {100.0*preview:.1f}%{suffix}"
+        if step is CalibrationStep.MICROPHONE_GATE:
+            observed,recommended=_calibration_sample_microphone()
+            return (
+                f"ambient RMS p95 {observed:.0f}; recommended gate "
+                f"{recommended:.0f}; staged {values.hardware.microphone_gate:.0f}"
+            )
+        if step is CalibrationStep.SPEAKER_VOLUME:
+            if _speech_engine is None:
+                raise CalibrationConfigError("streaming Piper speaker path is unavailable")
+            _calibration_volume_override=values.speaker_volume
+            metrics=_speech_engine.speak(
+                CALIBRATION_LINE,
+                stop_event=controller.stop_event if controller is not None else None,
+            )
+            if metrics.frames_written<=0:
+                raise CalibrationConfigError("speaker preview produced no audio frames")
+            return f"speaker previewed at {100.0*values.speaker_volume:.0f}%"
+        if step is CalibrationStep.PIR_HOLD:
+            detected=bool(getattr(pir,"motion_detected",False))
+            return (
+                f"PIR is {'active' if detected else 'clear'}; staged hold "
+                f"{values.hardware.pir_hold_seconds:.2f}s"
+            )
+        if step is CalibrationStep.PIR_COOLDOWN:
+            return f"staged visitor cooldown {values.hardware.pir_cooldown_seconds:.1f}s"
+        raise CalibrationConfigError(f"unsupported calibration step {step.value}")
+    finally:
+        _calibration_volume_override=None
+        _calibration_safe_outputs()
+
+def _operator_settings_for_calibration(values):
+    values=values.validated()
+    current=_current_operator_settings()
+    return replace(
+        current,
+        eyes_dim=values.eyes_dim,
+        eyes_full=values.eyes_full,
+        volume=values.speaker_volume,
+        day_profile=DayProfile(
+            eyes_dim=values.eyes_dim,
+            eyes_full=values.eyes_full,
+            volume=values.speaker_volume,
+        ),
+        calibration=values.hardware,
+    )
+
+def _apply_calibration_values(values):
+    global JAW_REST_FRAC,JAW_MAX_FRAC,EYES_INVERT,ENERGY_GATE
+    global MOTION_HOLD_SEC,MOTION_COOLDOWN_SEC
+    global EYES_LISTEN_FRAC,EYES_SPEAK_FRAC,VOLUME,_day
+    values=values.validated()
+    JAW_REST_FRAC=values.hardware.jaw_rest
+    JAW_MAX_FRAC=values.hardware.jaw_max
+    EYES_INVERT=1 if values.hardware.eyes_inverted else 0
+    ENERGY_GATE=values.hardware.microphone_gate
+    MOTION_HOLD_SEC=values.hardware.pir_hold_seconds
+    MOTION_COOLDOWN_SEC=values.hardware.pir_cooldown_seconds
+    EYES_LISTEN_FRAC=values.eyes_dim
+    EYES_SPEAK_FRAC=values.eyes_full
+    VOLUME=values.speaker_volume
+    _day={"listen":None,"speak":None,"vol":None}
+    if _speech_engine is not None:
+        _speech_engine.rest_fraction=JAW_REST_FRAC
+        _speech_engine.maximum_fraction=JAW_MAX_FRAC
+
+def _cancel_calibration(reason=None):
+    global _calibration_state,_calibration_last_result,_calibration_last_error
+    if not _calibration_session.active:
+        return False
+    _calibration_safe_outputs()
+    _calibration_session.cancel()
+    _calibration_state="ready"
+    _calibration_last_result="cancelled"
+    _calibration_last_error=str(reason)[:255] if reason else "none"
+    _health_set("calibration",ComponentState.READY,"maintenance-only calibration ready")
+    _publish_calibration_state()
+    return True
+
+def _handle_calibration_command(payload):
+    global _calibration_state,_calibration_last_result,_calibration_last_error
+    global _calibration_last_preview,_calibration_last_saved
+    global _calibration_save_count,_calibration_preview_count
+    command=payload if isinstance(payload,dict) else {"action":str(payload)}
+    action=str(command.get("action") or "").strip().lower()
+    try:
+        if not CALIBRATION_ENABLED:
+            raise CalibrationConfigError("calibration is disabled")
+        if action=="start":
+            if not maintenance_mode:
+                raise CalibrationConfigError("enable Maintenance Mode before calibration")
+            if night_mode:
+                raise CalibrationConfigError("turn off Night Mode before calibration")
+            if _settings_store is None:
+                raise CalibrationConfigError("saved settings must be enabled for calibration")
+            _calibration_session.start(_current_calibration_values())
+            _calibration_state="active"
+            _calibration_last_result="started"
+            _calibration_last_error="none"
+            _health_set("calibration",ComponentState.READY,"calibration session active")
+        elif action=="select":
+            _calibration_session.select(command.get("step"))
+            _calibration_state="active"
+            _calibration_last_result="step_selected"
+            _calibration_last_error="none"
+        elif action=="set":
+            _calibration_session.update(command.get("step"),command.get("value"))
+            _calibration_state="active"
+            _calibration_last_result="staged"
+            _calibration_last_error="none"
+        elif action=="next":
+            _calibration_session.next()
+            _calibration_state="active"
+            _calibration_last_result="advanced"
+            _calibration_last_error="none"
+        elif action=="preview":
+            _calibration_state="previewing"
+            _publish_calibration_state()
+            if controller is not None:
+                controller.set_state(RuntimeState.CALIBRATION)
+            _calibration_last_preview=_preview_calibration()[:255]
+            _calibration_preview_count+=1
+            _calibration_state="active"
+            _calibration_last_result="previewed"
+            _calibration_last_error="none"
+        elif action=="save":
+            _calibration_state="saving"
+            _publish_calibration_state()
+            values=_calibration_session.validated()
+            snapshot=_operator_settings_for_calibration(values)
+            if not _persist_operator_settings(snapshot):
+                raise CalibrationConfigError(
+                    _settings_last_error or "could not persist calibration"
+                )
+            _apply_calibration_values(values)
+            _calibration_safe_outputs()
+            _calibration_session.complete()
+            _calibration_state="ready"
+            _calibration_last_result="saved"
+            _calibration_last_error="none"
+            _calibration_last_saved=_settings_last_saved
+            _calibration_save_count+=1
+            _publish_operator_controls()
+            _health_set("calibration",ComponentState.READY,"saved calibration active")
+        elif action=="cancel":
+            _cancel_calibration()
+            return
+        else:
+            raise CalibrationConfigError(f"unknown calibration action {action!r}")
+        _health_set(
+            "calibration",
+            ComponentState.READY,
+            "calibration session active"
+            if _calibration_session.active
+            else "maintenance-only calibration ready",
+        )
+    except Exception as error:
+        _calibration_state="active" if _calibration_session.active else "error"
+        _calibration_last_result="error"
+        _calibration_last_error=str(error)[:255]
+        _health_set("calibration",ComponentState.DEGRADED,str(error))
+        _calibration_safe_outputs()
+    _publish_calibration_state()
+
+def _request_calibration_command(action,step=None,value=None):
+    payload={"action":action}
+    if step is not None: payload["step"]=step
+    if value is not None: payload["value"]=value
+    accepted=_enqueue(EventKind.CALIBRATION_COMMAND,payload)
+    if not accepted:
+        _record_calibration_result("error","calibration command queue is full")
+    return accepted
 
 _transcript=None
 def _transcript_start():
@@ -1648,6 +2156,13 @@ def _init_health_monitor():
         "maintenance",
         ComponentState.STARTING,
         "operator lockout state pending",
+        False,
+        publish=False,
+    )
+    _health.set_component(
+        "calibration",
+        ComponentState.STARTING if CALIBRATION_ENABLED else ComponentState.DISABLED,
+        "guided calibration pending" if CALIBRATION_ENABLED else "disabled by configuration",
         False,
         publish=False,
     )
@@ -2865,6 +3380,7 @@ def _runtime_state_changed(state):
         RuntimeState.SCENE,
         RuntimeState.IDLE_LIFE,
         RuntimeState.SELF_TEST,
+        RuntimeState.CALIBRATION,
     ):
         return
     else:
@@ -2959,6 +3475,9 @@ def _handle_event(event):
         _run_self_test()
     elif event.kind is EventKind.RELOAD_CONTENT:
         _run_content_reload()
+    elif event.kind is EventKind.CALIBRATION_COMMAND:
+        controller.set_state(RuntimeState.CALIBRATION)
+        _handle_calibration_command(event.payload)
     elif event.kind is EventKind.SAY:
         _transcript_start()
         try:
@@ -3004,6 +3523,8 @@ def _cleanup():
     global _runtime_ready
     _runtime_ready=False
     _cancel_motion_timer()
+    try: _cancel_calibration("service stopping")
+    except Exception: pass
     try:
         if _watchdog is not None: _watchdog.stop("skeleton runtime stopping")
     except Exception: pass
@@ -3038,6 +3559,10 @@ def _cleanup():
     try: mqtt_pub("content_reload/active","OFF",retain=True)
     except Exception: pass
     try: mqtt_pub("content_reload/state","stopping",retain=True)
+    except Exception: pass
+    try: mqtt_pub("calibration/active","OFF",retain=True)
+    except Exception: pass
+    try: mqtt_pub("calibration/state","stopping",retain=True)
     except Exception: pass
     try: mqtt_pub("availability","offline",retain=True)
     except Exception: pass
@@ -3076,6 +3601,7 @@ def main():
     signal.signal(signal.SIGINT,_signal_handler)
     signal.signal(signal.SIGTERM,_signal_handler)
     _init_maintenance_mode()
+    _init_calibration()
     _init_personality_library()
     _do_mqtt_connect()
     _init_scene_engine()

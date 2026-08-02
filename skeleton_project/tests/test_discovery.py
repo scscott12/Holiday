@@ -174,6 +174,33 @@ class DiscoveryTests(unittest.TestCase):
             "timestamp",
         )
 
+    def test_guided_calibration_controls_and_diagnostics_are_discovered(self):
+        messages = dict(discovery_messages("skeleton"))
+
+        selector = messages[
+            "homeassistant/select/skeleton/calibration_step_select/config"
+        ]
+        self.assertEqual(selector["cmd_t"], "holiday/skeleton/calibration/step/set")
+        self.assertIn("microphone_gate", selector["options"])
+        self.assertEqual(
+            messages[
+                "homeassistant/button/skeleton/calibration_start/config"
+            ]["cmd_t"],
+            "holiday/skeleton/calibration/start/set",
+        )
+        self.assertEqual(
+            messages[
+                "homeassistant/number/skeleton/calibration_jaw_rest/config"
+            ]["max"],
+            70,
+        )
+        self.assertEqual(
+            messages[
+                "homeassistant/binary_sensor/skeleton/calibration_active/config"
+            ]["stat_t"],
+            "holiday/skeleton/calibration/active",
+        )
+
     def test_transactional_content_reload_is_discovered(self):
         messages = dict(discovery_messages("skeleton"))
 
