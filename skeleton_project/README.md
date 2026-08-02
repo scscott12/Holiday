@@ -22,6 +22,7 @@ holiday_skeleton/
   health.py                  health aggregation and Pi telemetry
   idle_life.py               sparse idle-action scheduler
   personality.py             validated character packs and bounded settings
+  release_candidate.py       private Pi acceptance and soak-test evidence
   scene.py                   validated scene files, cue loading, and bounded runner
   settings.py                atomic non-sensitive operator-state persistence
   self_test.py               bounded manual output verification
@@ -191,6 +192,8 @@ Manual rollback is accepted only when `current` still matches the last recorded 
 
 The deployer does not run `apt`, update Raspberry Pi OS or firmware, change the systemd override, rotate credentials, publish MQTT data, or trigger a hardware self-test. After a successful deployment, use Maintenance Mode and the manual self-test/calibration controls for physical acceptance.
 
+For the first production release, follow [RELEASE.md](RELEASE.md). Its fail-closed acceptance tool binds one `v1.0-rcN` installation to an exact Git commit, records explicit operator observations, captures credential-free Pi/systemd samples, and requires an uninterrupted eight-hour soak with three healthy samples before it will produce a finalized `0600` evidence bundle and SHA-256 digest. The `v1.0` tag is created only after that record verifies.
+
 ## Systemd override (env)
 Create `/etc/systemd/system/holiday-skeleton.service.d/override.conf`:
 ```ini
@@ -291,11 +294,11 @@ Home Assistant reports:
 - `sensor.skeleton_tts_speak_time`: total synthesis and playback time.
 - `sensor.skeleton_tts_audio_time`: generated PCM duration for comparison with wall time.
 
-After upgrading an existing Pi checkout, reinstall requirements before restarting the service:
+Upgrade through the verified versioned deployer so dependencies are prepared and checked while the existing service remains online:
 
 ```bash
-sudo /opt/holiday-skeleton/venv/bin/pip install -r /opt/holiday-skeleton/requirements.txt
-sudo systemctl restart holiday-skeleton
+cd /path/to/new/skeleton_project
+sudo python3 scripts/deploy_release.py
 sudo journalctl -u holiday-skeleton -f
 ```
 

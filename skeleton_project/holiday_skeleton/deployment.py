@@ -830,7 +830,9 @@ class ReleaseDeployer:
                     f"prior release was restored but its health check failed: {error}"
                 ) from error
 
-    def deploy(self, release_id: str) -> DeploymentResult:
+    def deploy(
+        self, release_id: str, *, simulate_activation_failure: bool = False
+    ) -> DeploymentResult:
         release_id = validate_release_id(release_id)
         self.preflight()
         previous = self._current_release()
@@ -844,6 +846,10 @@ class ReleaseDeployer:
             _atomic_write(self.paths.service_unit, self._render_unit(release), mode=0o644)
             self._switch_current(release)
             self.systemd.daemon_reload()
+            if simulate_activation_failure:
+                raise DeploymentError(
+                    "operator-requested activation failure for rollback acceptance"
+                )
             self.systemd.start_and_verify(self.health_timeout, self.settle_seconds)
             record = {
                 "version": DEPLOYMENT_RECORD_VERSION,

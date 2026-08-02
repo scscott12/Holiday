@@ -212,6 +212,23 @@ class DeploymentTests(unittest.TestCase):
             '{"version": 3}\n',
         )
 
+    def test_deliberate_post_switch_failure_exercises_real_automatic_rollback(self):
+        old = self._old_versioned_install()
+        systemd = FakeSystemd()
+        deployer = self._deployer(systemd)
+
+        with self.assertRaisesRegex(
+            DeploymentError, "operator-requested activation failure"
+        ):
+            deployer.deploy("acceptance-fault", simulate_activation_failure=True)
+
+        self.assertEqual((self.prefix / "current").resolve(), old.resolve())
+        self.assertEqual(self.unit.read_text(encoding="utf-8"), "legacy unit\n")
+        self.assertEqual(
+            systemd.events,
+            ["stop", "daemon-reload", "stop", "daemon-reload", "start-and-verify"],
+        )
+
     def test_failed_fresh_install_removes_seeded_content_and_does_not_start_missing_prior_unit(self):
         systemd = FakeSystemd(start_failures=[True])
         deployer = self._deployer(systemd)

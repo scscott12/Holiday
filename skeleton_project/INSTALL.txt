@@ -207,3 +207,11 @@ sudo python3 scripts/deploy_release.py --rollback
 # and confirm no unclean_restart was added. Then use a test copy of the journal
 # with an active_session marker (or force-stop only during a controlled test),
 # restart, and confirm one warning unclean_restart event is reported.
+
+## 8) v1.0 release acceptance
+# Follow RELEASE.md from the exact merged, CI-passing candidate commit. It covers
+# rollback rehearsal, physical calibration/self-test, conversation and interruption,
+# maintenance lockout, power-cycle/watchdog recovery, journal privacy, and the
+# minimum eight-hour soak. The private evidence tool refuses final signoff unless
+# every manual check is passed and at least three healthy Pi samples span the full
+# soak duration. Do not create the v1.0 tag before its SHA-256 evidence verifies.

@@ -77,6 +77,22 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="restore the release, settings, content, and unit saved by the last deployment",
     )
+    action.add_argument(
+        "--simulate-activation-failure",
+        action="store_true",
+        help=(
+            "switch to the staged release, deliberately fail before starting it, "
+            "and verify automatic rollback"
+        ),
+    )
+    result.add_argument(
+        "--confirm-maintenance-lockout",
+        action="store_true",
+        help=(
+            "required with --simulate-activation-failure; confirms Maintenance "
+            "Mode is locked and actuator power is disconnected"
+        ),
+    )
     result.add_argument(
         "--release-id",
         help="safe unique release label; defaults to UTC timestamp plus Git commit",
@@ -122,6 +138,20 @@ def parser() -> argparse.ArgumentParser:
 
 def main(arguments: list[str] | None = None) -> int:
     options = parser().parse_args(arguments)
+    if options.simulate_activation_failure and not options.confirm_maintenance_lockout:
+        print(
+            "Simulated activation failure requires --confirm-maintenance-lockout "
+            "after Maintenance Mode is locked and actuator power is disconnected.",
+            file=sys.stderr,
+        )
+        return 2
+    if options.confirm_maintenance_lockout and not options.simulate_activation_failure:
+        print(
+            "--confirm-maintenance-lockout is only valid with "
+            "--simulate-activation-failure.",
+            file=sys.stderr,
+        )
+        return 2
     if os.geteuid() != 0:
         print(
             "Deployment requires root so it can manage /opt, systemd, and the "
@@ -152,7 +182,10 @@ def main(arguments: list[str] | None = None) -> int:
                 )
             else:
                 release_id = options.release_id or default_release_id(paths.source)
-                result = deployer.deploy(release_id)
+                result = deployer.deploy(
+                    release_id,
+                    simulate_activation_failure=options.simulate_activation_failure,
+                )
                 previous = result.previous_release or "legacy pre-release layout"
                 print(
                     f"Deployment complete: {result.release_id} is active at "
