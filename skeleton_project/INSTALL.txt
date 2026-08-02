@@ -6,29 +6,25 @@ sudo apt-get install -y python3-venv python3-dev libatlas-base-dev libopenblas-d
                         portaudio19-dev alsa-utils i2c-tools python3-lgpio
 sudo usermod -aG i2c,audio,video,gpio $USER
 
-## 1) App layout
-sudo mkdir -p /opt/holiday-skeleton
-sudo cp skeleton_all_in_one_mqtt.py /opt/holiday-skeleton/
-sudo cp -r holiday_skeleton /opt/holiday-skeleton/
-sudo cp scenes.json /opt/holiday-skeleton/
-sudo cp personalities.json /opt/holiday-skeleton/
-sudo mkdir -p /opt/holiday-skeleton/sounds
-cd /opt/holiday-skeleton
-sudo python3 -m venv venv
-sudo /opt/holiday-skeleton/venv/bin/pip install --upgrade pip
-sudo /opt/holiday-skeleton/venv/bin/pip install -r /path/to/requirements.txt
-
-## 2) Systemd service
-sudo cp /path/to/systemd/holiday-skeleton.service /etc/systemd/system/holiday-skeleton.service
+## 1) Systemd settings
 sudo mkdir -p /etc/systemd/system/holiday-skeleton.service.d
 sudo cp /path/to/systemd/override.conf.example /etc/systemd/system/holiday-skeleton.service.d/override.conf
 # Edit override to your broker/user/pass; wrap password in quotes if it has "!"
 sudo nano /etc/systemd/system/holiday-skeleton.service.d/override.conf
 
-sudo systemctl daemon-reload
+## 2) Verified versioned install
+cd /path/to/skeleton_project
+sudo python3 scripts/deploy_release.py
 sudo systemctl enable holiday-skeleton
-sudo systemctl start holiday-skeleton
 sudo journalctl -u holiday-skeleton -f
+
+# The deployer builds a fresh venv below /opt/holiday-skeleton/releases, verifies
+# dependencies, code, content, and the systemd unit before stopping the old service,
+# then atomically switches /opt/holiday-skeleton/current. It preserves existing
+# scenes.json, personalities.json, and sounds at /opt/holiday-skeleton.
+# Settings, content, and the prior unit are backed up under the root-only
+# /var/lib/holiday-skeleton-deploy directory. A failed READY=1 or stability check
+# restores the prior release automatically.
 
 ## 3) Home Assistant
 # (optional) clear out old retained discovery for this device
@@ -123,16 +119,22 @@ python3 -m compileall -q holiday_skeleton scripts tests skeleton_all_in_one_mqtt
 python3 -c "import skeleton_all_in_one_mqtt"
 python3 scripts/validate_project.py
 
-## 7) Existing-install upgrade / smoke test
-sudo cp skeleton_all_in_one_mqtt.py /opt/holiday-skeleton/
-sudo cp -r holiday_skeleton /opt/holiday-skeleton/
-sudo cp -n scenes.json /opt/holiday-skeleton/
-sudo cp -n personalities.json /opt/holiday-skeleton/
-sudo mkdir -p /opt/holiday-skeleton/sounds
-sudo cp requirements.txt /opt/holiday-skeleton/
-sudo /opt/holiday-skeleton/venv/bin/pip install -r /opt/holiday-skeleton/requirements.txt
-sudo systemctl restart holiday-skeleton
+## 7) Existing-install upgrade / rollback / smoke test
+cd /path/to/new/skeleton_project
+sudo python3 scripts/deploy_release.py
 sudo journalctl -u holiday-skeleton -f
+
+# The first run safely migrates an existing direct /opt/holiday-skeleton install.
+# Its files and prior systemd unit remain available as the automatic rollback target.
+# Later runs switch between immutable releases/<id> directories.
+
+# Manual rollback of the most recent successful deployment restores its exact
+# pre-deployment settings, content, service unit, and prior release:
+sudo python3 scripts/deploy_release.py --rollback
+
+# Deployment intentionally does not update Raspberry Pi OS packages, firmware,
+# MQTT credentials, the systemd override, or operator content. Old release and
+# backup directories are retained for deliberate operator cleanup.
 
 # Expected once during startup:
 # [TTS] Piper voice warm and output stream ready in ...s
