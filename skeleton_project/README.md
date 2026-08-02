@@ -17,6 +17,7 @@ holiday_skeleton/
   barge_in.py                echo-aware interruption command monitor
   brain.py                   Ollama stream producer and phrase assembly
   content.py                 transactional personality/scene preparation
+  event_journal.py           bounded privacy-safe operational history
   health.py                  health aggregation and Pi telemetry
   idle_life.py               sparse idle-action scheduler
   personality.py             validated character packs and bounded settings
@@ -151,6 +152,11 @@ views:
           - binary_sensor.skeleton_health_ok
           - sensor.skeleton_health
           - sensor.skeleton_health_reasons
+          - sensor.skeleton_event_journal_state
+          - sensor.skeleton_event_journal_last_event
+          - sensor.skeleton_event_journal_count
+          - sensor.skeleton_event_journal_warning_count
+          - sensor.skeleton_event_journal_error_count
           - sensor.skeleton_cpu_temperature
           - sensor.skeleton_memory_use
           - sensor.skeleton_disk_use
@@ -197,6 +203,10 @@ Environment="PERSONALITIES_PATH=/opt/holiday-skeleton/personalities.json"
 Environment="PERSONALITY=pirate"
 Environment="PERSIST_SETTINGS_ENABLED=1"
 Environment="PERSIST_SETTINGS_PATH=/var/lib/holiday-skeleton/operator-settings.json"
+Environment="EVENT_JOURNAL_ENABLED=1"
+Environment="EVENT_JOURNAL_PATH=/var/lib/holiday-skeleton/diagnostic-events.json"
+Environment="EVENT_JOURNAL_MAX_ENTRIES=128"
+Environment="EVENT_JOURNAL_RECENT_ENTRIES=20"
 Environment="MAINTENANCE_MODE=0"
 Environment="CALIBRATION_ENABLED=1"
 Environment="CALIBRATION_PREVIEW_SEC=0.6"
@@ -432,7 +442,7 @@ Set `CONTENT_RELOAD_ENABLED=0` to remove the live operation while retaining norm
 
 ## Health and performance
 
-The runtime performs explicit startup checks for MQTT, saved settings, the personality library, the Vosk microphone path, Piper, Ollama, the PIR, and PCA9685 animation hardware. It reports one of five overall states:
+The runtime performs explicit startup checks for MQTT, saved settings, the diagnostic journal, the personality library, the Vosk microphone path, Piper, Ollama, the PIR, and PCA9685 animation hardware. It reports one of five overall states:
 
 - `healthy`: all enabled paths are ready.
 - `degraded`: the skeleton remains usable, but an optional path or preferred fast path is unavailable. Examples include no PIR with MQTT trigger still working, Ollama using the local spoken fallback, or legacy Piper replacing streaming audio.
@@ -452,6 +462,16 @@ Configuration:
 - `OLLAMA_HEALTHCHECK_ENABLED`: set to `0` to disable only the periodic `/api/tags` probe.
 
 The monitor uses standard Linux files and the optional Raspberry Pi [`vcgencmd get_throttled`](https://www.raspberrypi.com/documentation/computers/os.html#get_throttled) command, so it adds no Python dependency. Historical throttle flags remain visible even after the immediate condition clears; only current throttle bits degrade health.
+
+## Diagnostic event journal
+
+With `EVENT_JOURNAL_ENABLED=1` (the default), the runtime retains a bounded operational history at `/var/lib/holiday-skeleton/diagnostic-events.json`. It records service starts and clean stops, unclean restart detection, watchdog state transitions, component failures and recoveries, content reload results, self-test results, calibration starts/saves/cancellations/failures, maintenance lock changes, blocked commands, and operator restart requests. It does not record normal conversations or visitor activity.
+
+The versioned document is capped at `EVENT_JOURNAL_MAX_ENTRIES` (`128` by default) and 256 KiB. Every update is written to a `0600` temporary file, flushed with `fsync`, and atomically replaces the previous document. The oldest events roll off first. A corrupt, incompatible, oversized, or unwritable journal degrades only the `event_journal` health component; the skeleton continues operating and an existing file is never overwritten after a failed validation.
+
+Each entry contains only a sequence, UTC timestamp, severity, category, event code, component source, and a 240-character system-error summary. Common password, token, authorization, API-key, and URL-credential forms are redacted before persistence. Visitor audio, recognized speech, transcripts, prompts, generated replies, conversation memory, MQTT usernames/passwords, and other credentials are never supplied to the journal.
+
+At startup, the runtime marks a short random diagnostic session active. Clean shutdown records `runtime_stopped` and clears that marker. If the next start finds the prior marker still active, it records `unclean_restart`, covering a watchdog kill, crash, power loss, or forced termination. Home Assistant exposes journal state, retained/warning/error counts, the latest event, last write error, and the latest `EVENT_JOURNAL_RECENT_ENTRIES` entries as bounded JSON attributes on the latest-event sensor. The full retained history remains local on the Pi.
 
 ## Operator self-test
 

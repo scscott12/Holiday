@@ -35,6 +35,7 @@ from holiday_skeleton.content import (
 )
 from holiday_skeleton.controller import EventKind, RuntimeState, SkeletonController
 from holiday_skeleton.discovery import discovery_messages
+from holiday_skeleton.event_journal import EventJournal, sanitize_detail
 from holiday_skeleton.idle_life import IdleAction, IdleDecision, IdleLifeScheduler
 from holiday_skeleton.personality import (
     can_switch_personality,
@@ -109,6 +110,14 @@ def env_words(k, default):
         if word.strip()
     )
 
+def bounded_env_int(k,default,minimum,maximum):
+    try:
+        value=int(envs(k,str(default)))
+    except (TypeError,ValueError):
+        print(f"[config] {k} must be an integer; using {default}")
+        value=int(default)
+    return max(int(minimum),min(int(maximum),value))
+
 USER_HOME    = envs("HOME", "/home/pi")
 DEVICE_NAME  = envs("DEVICE_NAME", "skeleton")
 MQTT_HOST    = envs("MQTT_HOST", "<ipAddress>")
@@ -166,6 +175,19 @@ PERSIST_SETTINGS_ENABLED = envs("PERSIST_SETTINGS_ENABLED","1").strip().lower() 
 PERSIST_SETTINGS_PATH = envs(
     "PERSIST_SETTINGS_PATH",
     "/var/lib/holiday-skeleton/operator-settings.json",
+)
+EVENT_JOURNAL_ENABLED = envs("EVENT_JOURNAL_ENABLED","1").strip().lower() in (
+    "1","true","yes","on"
+)
+EVENT_JOURNAL_PATH = envs(
+    "EVENT_JOURNAL_PATH",
+    "/var/lib/holiday-skeleton/diagnostic-events.json",
+)
+EVENT_JOURNAL_MAX_ENTRIES = bounded_env_int(
+    "EVENT_JOURNAL_MAX_ENTRIES",128,16,512
+)
+EVENT_JOURNAL_RECENT_ENTRIES = bounded_env_int(
+    "EVENT_JOURNAL_RECENT_ENTRIES",20,1,50
 )
 MAINTENANCE_MODE_DEFAULT = envs("MAINTENANCE_MODE","0").strip().lower() in (
     "1","true","yes","on"
@@ -307,6 +329,12 @@ _settings_state="starting"
 _settings_last_saved="never"
 _settings_last_error="none"
 _settings_save_count=0
+
+_event_journal=None
+_event_journal_state="starting"
+_event_journal_last_error="none"
+_event_journal_health_states={}
+_event_journal_watchdog_state=None
 
 _self_test_runner=None
 _self_test_active=False
@@ -460,9 +488,149 @@ def mqtt_pub_abs(topic,payload,retain=False):
         if mqttc: mqttc.publish(topic,payload,retain=retain)
     except Exception: pass
 
+def _event_journal_empty_payload():
+    return json.dumps(
+        {
+            "events":[],
+            "retained":0,
+            "maximum_entries":EVENT_JOURNAL_MAX_ENTRIES,
+            "warning_count":0,
+            "error_count":0,
+        },
+        separators=(",",":"),
+        sort_keys=True,
+    )
+
+def _publish_event_journal_snapshot(snapshot=None):
+    if snapshot is None and _event_journal is not None:
+        snapshot=_event_journal.snapshot()
+    last=snapshot.last_event if snapshot is not None else None
+    mqtt_pub("journal/state",_event_journal_state,retain=True)
+    mqtt_pub("journal/count",str(snapshot.count if snapshot is not None else 0),retain=True)
+    mqtt_pub(
+        "journal/warning_count",
+        str(snapshot.warning_count if snapshot is not None else 0),
+        retain=True,
+    )
+    mqtt_pub(
+        "journal/error_count",
+        str(snapshot.error_count if snapshot is not None else 0),
+        retain=True,
+    )
+    mqtt_pub("journal/last_event",last.code if last is not None else "none",retain=True)
+    mqtt_pub("journal/last_event_at",last.timestamp if last is not None else "never",retain=True)
+    mqtt_pub("journal/last_error",_event_journal_last_error,retain=True)
+    mqtt_pub(
+        "journal/recent",
+        snapshot.recent_json(EVENT_JOURNAL_RECENT_ENTRIES)
+        if snapshot is not None
+        else _event_journal_empty_payload(),
+        retain=True,
+    )
+
+def _event_journal_health(state,detail):
+    if _health is not None:
+        _health.set_component(
+            "event_journal",
+            state,
+            detail,
+            False,
+            publish=False,
+        )
+
+def _event_journal_failed(error):
+    global _event_journal_state,_event_journal_last_error
+    _event_journal_state="error"
+    _event_journal_last_error=sanitize_detail(error)
+    _event_journal_health(
+        ComponentState.DEGRADED,
+        _event_journal_last_error,
+    )
+    _publish_event_journal_snapshot()
+    print(f"[event journal] {_event_journal_last_error}")
+
+def _event_journal_record(category,code,severity="info",source="runtime",detail=""):
+    global _event_journal_state,_event_journal_last_error
+    if _event_journal is None:
+        return False
+    try:
+        snapshot=_event_journal.record(category,code,severity,source,detail)
+    except Exception as error:
+        _event_journal_failed(error)
+        return False
+    _event_journal_state="ready"
+    _event_journal_last_error="none"
+    _event_journal_health(ComponentState.READY,f"{snapshot.count} events retained")
+    _publish_event_journal_snapshot(snapshot)
+    return True
+
+def _init_event_journal():
+    global _event_journal,_event_journal_state,_event_journal_last_error
+    if not EVENT_JOURNAL_ENABLED:
+        _event_journal=None
+        _event_journal_state="disabled"
+        _event_journal_last_error="none"
+        _event_journal_health(ComponentState.DISABLED,"disabled by configuration")
+        _publish_event_journal_snapshot()
+        return
+    _event_journal=EventJournal(
+        EVENT_JOURNAL_PATH,
+        maximum_entries=EVENT_JOURNAL_MAX_ENTRIES,
+    )
+    try:
+        snapshot=_event_journal.start_session("runtime")
+    except Exception as error:
+        _event_journal=None
+        _event_journal_failed(error)
+        return
+    _event_journal_state="ready"
+    _event_journal_last_error="none"
+    _event_journal_health(ComponentState.READY,f"{snapshot.count} events retained")
+    _publish_event_journal_snapshot(snapshot)
+    if len(snapshot.events)>=2 and snapshot.events[-2].code=="unclean_restart":
+        print("[event journal] prior runtime did not close cleanly")
+    print(f"[event journal] retaining up to {snapshot.maximum_entries} events at {EVENT_JOURNAL_PATH}")
+
+def _close_event_journal():
+    global _event_journal_state,_event_journal_last_error
+    if _event_journal is None:
+        return
+    try:
+        snapshot=_event_journal.end_session("runtime")
+    except Exception as error:
+        _event_journal_failed(error)
+        return
+    _event_journal_state="stopped"
+    _event_journal_last_error="none"
+    _publish_event_journal_snapshot(snapshot)
+
 def _health_set(name,state,detail="",critical=False,publish=True):
+    previous=_event_journal_health_states.get(str(name))
+    current=getattr(state,"value",str(state))
     if _health is not None:
         _health.set_component(name,state,detail,critical,publish=publish)
+    _event_journal_health_states[str(name)]=current
+    if str(name)=="event_journal" or current==previous:
+        return
+    if current in (ComponentState.DEGRADED.value,ComponentState.FAILED.value):
+        _event_journal_record(
+            "health",
+            "component_failed" if current==ComponentState.FAILED.value else "component_degraded",
+            "error" if current==ComponentState.FAILED.value else "warning",
+            str(name),
+            detail,
+        )
+    elif (
+        current==ComponentState.READY.value
+        and previous in (ComponentState.DEGRADED.value,ComponentState.FAILED.value)
+    ):
+        _event_journal_record(
+            "health",
+            "component_recovered",
+            "info",
+            str(name),
+            detail,
+        )
 
 def _health_latency(name,seconds):
     if _health is not None:
@@ -485,6 +653,10 @@ def _publish_watchdog_snapshot(snapshot=None):
     mqtt_pub("watchdog/last_error",snapshot.last_error or "none",retain=True)
 
 def _watchdog_changed(snapshot:WatchdogSnapshot):
+    global _event_journal_watchdog_state
+    previous=_event_journal_watchdog_state
+    current=snapshot.state.value
+    _event_journal_watchdog_state=current
     if snapshot.state is WatchdogState.DISABLED:
         state=ComponentState.DISABLED; detail="not running under systemd watchdog"
         critical=False
@@ -507,6 +679,29 @@ def _watchdog_changed(snapshot:WatchdogSnapshot):
     else:
         state=ComponentState.STOPPING; detail="watchdog stopping"
         critical=False
+    if current!=previous:
+        if snapshot.state is WatchdogState.STALE:
+            _event_journal_record(
+                "watchdog","watchdog_stale","error","watchdog",detail
+            )
+        elif snapshot.state is WatchdogState.ERROR:
+            _event_journal_record(
+                "watchdog","watchdog_error","warning","watchdog",detail
+            )
+        elif snapshot.state is WatchdogState.READY:
+            _event_journal_record(
+                "watchdog",
+                "watchdog_recovered"
+                if previous in (WatchdogState.STALE.value,WatchdogState.ERROR.value)
+                else "watchdog_ready",
+                "info",
+                "watchdog",
+                detail,
+            )
+        elif snapshot.state is WatchdogState.STOPPING:
+            _event_journal_record(
+                "watchdog","watchdog_stopping","info","watchdog",detail
+            )
     _health_set("watchdog",state,detail,critical)
     _publish_watchdog_snapshot(snapshot)
 
@@ -583,6 +778,13 @@ def _record_maintenance_result(result,error="none"):
 def _maintenance_reject(action):
     global _maintenance_rejected_count
     _maintenance_rejected_count+=1
+    _event_journal_record(
+        "maintenance",
+        "command_blocked",
+        "warning",
+        "controller",
+        f"blocked action {str(action or 'command')}",
+    )
     _record_maintenance_result(
         "blocked",
         f"maintenance lockout blocked {str(action or 'command')}",
@@ -751,6 +953,7 @@ def _on_connect(client,userdata,flags,rc,properties=None):
         _publish_self_test_state()
         _publish_content_reload_state()
         _publish_calibration_state()
+        _publish_event_journal_snapshot()
         _publish_watchdog_snapshot()
         if _health is not None: _health.publish_now(sample=False)
     else:
@@ -1712,6 +1915,15 @@ def _set_maintenance_mode(payload):
                 else "settings persistence disabled; restart uses configured default"
             )
             _publish_maintenance_state()
+        _event_journal_record(
+            "maintenance",
+            "maintenance_locked" if want else "maintenance_unlocked",
+            "info" if saved else "warning",
+            "controller",
+            "operator lockout persisted"
+            if saved
+            else "operator lockout changed but was not persisted",
+        )
 
 def _publish_calibration_state():
     try:
@@ -1964,6 +2176,13 @@ def _cancel_calibration(reason=None):
     _calibration_last_error=str(reason)[:255] if reason else "none"
     _health_set("calibration",ComponentState.READY,"maintenance-only calibration ready")
     _publish_calibration_state()
+    _event_journal_record(
+        "calibration",
+        "calibration_cancelled",
+        "info",
+        "controller",
+        reason or "operator cancelled staged calibration",
+    )
     return True
 
 def _handle_calibration_command(payload):
@@ -1987,6 +2206,13 @@ def _handle_calibration_command(payload):
             _calibration_last_result="started"
             _calibration_last_error="none"
             _health_set("calibration",ComponentState.READY,"calibration session active")
+            _event_journal_record(
+                "calibration",
+                "calibration_started",
+                "info",
+                "controller",
+                "maintenance-only calibration session opened",
+            )
         elif action=="select":
             _calibration_session.select(command.get("step"))
             _calibration_state="active"
@@ -2031,6 +2257,13 @@ def _handle_calibration_command(payload):
             _calibration_save_count+=1
             _publish_operator_controls()
             _health_set("calibration",ComponentState.READY,"saved calibration active")
+            _event_journal_record(
+                "calibration",
+                "calibration_saved",
+                "info",
+                "controller",
+                "validated hardware calibration saved atomically",
+            )
         elif action=="cancel":
             _cancel_calibration()
             return
@@ -2049,6 +2282,13 @@ def _handle_calibration_command(payload):
         _calibration_last_error=str(error)[:255]
         _health_set("calibration",ComponentState.DEGRADED,str(error))
         _calibration_safe_outputs()
+        _event_journal_record(
+            "calibration",
+            "calibration_failed",
+            "error",
+            "controller",
+            error,
+        )
     _publish_calibration_state()
 
 def _request_calibration_command(action,step=None,value=None):
@@ -2163,6 +2403,13 @@ def _init_health_monitor():
         "calibration",
         ComponentState.STARTING if CALIBRATION_ENABLED else ComponentState.DISABLED,
         "guided calibration pending" if CALIBRATION_ENABLED else "disabled by configuration",
+        False,
+        publish=False,
+    )
+    _health.set_component(
+        "event_journal",
+        ComponentState.STARTING if EVENT_JOURNAL_ENABLED else ComponentState.DISABLED,
+        "diagnostic journal pending" if EVENT_JOURNAL_ENABLED else "disabled by configuration",
         False,
         publish=False,
     )
@@ -2910,6 +3157,23 @@ def _run_content_reload():
         _content_reload_last_run=datetime.now(timezone.utc).isoformat(timespec="seconds")
         _content_reload_last_duration=max(0.0,time.monotonic()-started)
         _publish_content_reload_state()
+        if _content_reload_last_result=="reloaded" and _content_reload_last_error!="none":
+            journal_code="reload_committed_with_warning"; journal_severity="warning"
+        elif _content_reload_last_result=="reloaded":
+            journal_code="reload_completed"; journal_severity="info"
+        elif _content_reload_last_result=="interrupted":
+            journal_code="reload_interrupted"; journal_severity="warning"
+        else:
+            journal_code="reload_failed"; journal_severity="error"
+        _event_journal_record(
+            "content",
+            journal_code,
+            journal_severity,
+            "controller",
+            _content_reload_last_error
+            if _content_reload_last_error!="none"
+            else f"content reload completed in {_content_reload_last_duration:.3f}s",
+        )
 
 def _scene_eye_level(level):
     level=clamp(float(level),0.0,1.0)
@@ -3219,6 +3483,13 @@ def _run_self_test():
         )
         _health_set("self_test",ComponentState.READY,"queued run cancelled")
         _publish_self_test_state()
+        _event_journal_record(
+            "self_test",
+            "self_test_interrupted",
+            "warning",
+            "controller",
+            "queued self-test was cancelled before outputs moved",
+        )
         return
 
     _self_test_count+=1
@@ -3263,6 +3534,19 @@ def _run_self_test():
         _self_test_cancel_pending=False
         _self_test_last_run=datetime.now(timezone.utc).isoformat(timespec="seconds")
         _publish_self_test_state()
+        _event_journal_record(
+            "self_test",
+            f"self_test_{_self_test_last_result}",
+            "error"
+            if _self_test_last_result in ("failed","timed_out")
+            else "warning"
+            if _self_test_last_result in ("interrupted","degraded")
+            else "info",
+            "controller",
+            _self_test_last_error
+            if _self_test_last_error!="none"
+            else f"operator self-test {_self_test_last_result}",
+        )
 
 def _idle_life_ready_state():
     if _idle_life is None: return "starting"
@@ -3505,6 +3789,13 @@ def _handle_event(event):
     elif event.kind is EventKind.SET_NIGHT_MODE:
         _toggle_night_mode(event.payload)
     elif event.kind is EventKind.RESTART:
+        _event_journal_record(
+            "runtime",
+            "restart_requested",
+            "info",
+            "mqtt",
+            "operator requested service restart",
+        )
         mqtt_pub("availability","offline",retain=True)
         controller.request_stop("mqtt-restart")
 
@@ -3516,6 +3807,13 @@ def _handle_event(event):
 
 def _signal_handler(sig,frame):
     print(f"[signal] {signal.Signals(sig).name}; stopping")
+    _event_journal_record(
+        "runtime",
+        "stop_requested",
+        "info",
+        "signal",
+        signal.Signals(sig).name,
+    )
     if controller is not None:
         controller.request_stop("signal")
 
@@ -3578,6 +3876,8 @@ def _cleanup():
     try:
         if _pca: _pca.deinit()
     except Exception: pass
+    try: _close_event_journal()
+    except Exception: pass
     try:
         if mqttc: mqttc.loop_stop(); mqttc.disconnect()
     except Exception: pass
@@ -3585,6 +3885,7 @@ def _cleanup():
 def main():
     global controller,_runtime_ready
     _init_health_monitor()
+    _init_event_journal()
     _init_systemd_watchdog()
     _init_persistent_settings()
     controller=SkeletonController(

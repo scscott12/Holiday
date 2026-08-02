@@ -83,6 +83,12 @@ pip install paho-mqtt
   validated hardware calibration are saved; visitor speech and credentials are
   never written.
 - The packaged service owns /var/lib/holiday-skeleton and writes the state file atomically with 0600 permissions.
+- EVENT_JOURNAL_ENABLED=1 retains bounded operational diagnostics across restarts.
+- EVENT_JOURNAL_MAX_ENTRIES=128 controls local retention; recent Home Assistant
+  attributes are separately capped by EVENT_JOURNAL_RECENT_ENTRIES=20.
+- The event journal uses the same systemd-owned directory, atomic replacement,
+  and 0600 permissions. It excludes visitor audio/text, prompts, replies, memory,
+  MQTT credentials, and other secrets; common credential forms are redacted.
 - MAINTENANCE_MODE=0 is the first-run default. Turn on the Home Assistant
   Maintenance Mode switch before working on the prop; it forces eyes off and
   the jaw to rest, blocks actuation commands, and persists when settings are enabled.
@@ -190,3 +196,12 @@ sudo journalctl -u holiday-skeleton -f
 # an unwritable settings path; neither case may replace the working calibration.
 # Unlocking Maintenance Mode mid-session must cancel the draft and leave the jaw
 # at its prior rest position with the eyes physically off.
+# Confirm diagnostic-events.json is mode 0600 and contains runtime_started plus
+# the calibration, maintenance, reload, and self-test outcomes just exercised.
+# Search it for visitor phrases, prompts, broker usernames/passwords, and tokens;
+# none may appear. Confirm the Home Assistant latest-event attributes show no
+# more than EVENT_JOURNAL_RECENT_ENTRIES entries.
+# Stop the service normally and confirm runtime_stopped is last. Start it again
+# and confirm no unclean_restart was added. Then use a test copy of the journal
+# with an active_session marker (or force-stop only during a controlled test),
+# restart, and confirm one warning unclean_restart event is reported.

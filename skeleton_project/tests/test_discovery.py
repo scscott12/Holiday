@@ -237,6 +237,27 @@ class DiscoveryTests(unittest.TestCase):
             "timestamp",
         )
 
+    def test_bounded_event_journal_is_discovered(self):
+        messages = dict(discovery_messages("skeleton"))
+
+        latest = messages[
+            "homeassistant/sensor/skeleton/event_journal_last_event/config"
+        ]
+        self.assertEqual(latest["stat_t"], "holiday/skeleton/journal/last_event")
+        self.assertEqual(latest["json_attr_t"], "holiday/skeleton/journal/recent")
+        self.assertEqual(
+            messages[
+                "homeassistant/sensor/skeleton/event_journal_state/config"
+            ]["stat_t"],
+            "holiday/skeleton/journal/state",
+        )
+        self.assertEqual(
+            messages[
+                "homeassistant/sensor/skeleton/event_journal_error_count/config"
+            ]["stat_t"],
+            "holiday/skeleton/journal/error_count",
+        )
+
     def test_operator_self_test_controls_and_report_are_discovered(self):
         messages = dict(discovery_messages("skeleton"))
 

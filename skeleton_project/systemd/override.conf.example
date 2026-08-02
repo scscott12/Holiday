@@ -46,6 +46,12 @@ Environment="CONTENT_RELOAD_ENABLED=1"
 Environment="PERSIST_SETTINGS_ENABLED=1"
 Environment="PERSIST_SETTINGS_PATH=/var/lib/holiday-skeleton/operator-settings.json"
 
+# Bounded operational history only; never conversations, prompts, or credentials.
+Environment="EVENT_JOURNAL_ENABLED=1"
+Environment="EVENT_JOURNAL_PATH=/var/lib/holiday-skeleton/diagnostic-events.json"
+Environment="EVENT_JOURNAL_MAX_ENTRIES=128"
+Environment="EVENT_JOURNAL_RECENT_ENTRIES=20"
+
 # First-run lockout default; the persisted Home Assistant choice wins afterward.
 Environment="MAINTENANCE_MODE=0"
 
