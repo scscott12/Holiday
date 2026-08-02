@@ -522,6 +522,44 @@ def discovery_messages(
         "uniq_id": f"holiday_{device_name}_watchdog_last_error",
         "stat_t": f"{base}/watchdog/last_error",
     })
+    add("sensor", "event_journal_state", {
+        "name": f"{title} Event Journal State",
+        "uniq_id": f"holiday_{device_name}_event_journal_state",
+        "stat_t": f"{base}/journal/state",
+        "icon": "mdi:notebook-check-outline",
+    })
+    add("sensor", "event_journal_last_event", {
+        "name": f"{title} Event Journal Last Event",
+        "uniq_id": f"holiday_{device_name}_event_journal_last_event",
+        "stat_t": f"{base}/journal/last_event",
+        "json_attr_t": f"{base}/journal/recent",
+        "icon": "mdi:timeline-alert-outline",
+    })
+    add("sensor", "event_journal_last_event_at", {
+        "name": f"{title} Event Journal Last Event At",
+        "uniq_id": f"holiday_{device_name}_event_journal_last_event_at",
+        "stat_t": f"{base}/journal/last_event_at",
+    })
+    add("sensor", "event_journal_count", {
+        "name": f"{title} Event Journal Count",
+        "uniq_id": f"holiday_{device_name}_event_journal_count",
+        "stat_t": f"{base}/journal/count",
+    })
+    add("sensor", "event_journal_warning_count", {
+        "name": f"{title} Event Journal Warning Count",
+        "uniq_id": f"holiday_{device_name}_event_journal_warning_count",
+        "stat_t": f"{base}/journal/warning_count",
+    })
+    add("sensor", "event_journal_error_count", {
+        "name": f"{title} Event Journal Error Count",
+        "uniq_id": f"holiday_{device_name}_event_journal_error_count",
+        "stat_t": f"{base}/journal/error_count",
+    })
+    add("sensor", "event_journal_last_error", {
+        "name": f"{title} Event Journal Last Error",
+        "uniq_id": f"holiday_{device_name}_event_journal_last_error",
+        "stat_t": f"{base}/journal/last_error",
+    })
     add("binary_sensor", "ready", {
         "name": f"{title} Ready", "uniq_id": f"holiday_{device_name}_ready",
         "stat_t": f"{base}/ready", "pl_on": "ON", "pl_off": "OFF",
