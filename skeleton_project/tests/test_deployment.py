@@ -9,9 +9,12 @@ from unittest import mock
 from holiday_skeleton.deployment import (
     DeploymentError,
     DeploymentPaths,
+    HARDWARE_DEPENDENCY_MODULES,
     ReleaseDeployer,
-    RUNTIME_DEPENDENCY_IMPORT,
+    RUNTIME_DEPENDENCY_CHECK,
+    SAFE_RUNTIME_DEPENDENCY_MODULES,
     SystemdManager,
+    validate_runtime_dependencies,
     validate_release_id,
 )
 
@@ -367,7 +370,7 @@ class DeploymentTests(unittest.TestCase):
         with self.assertRaisesRegex(DeploymentError, "unsupported entry"):
             deployer._verify_manifest(release)
 
-    def test_runtime_preparation_imports_dependencies_before_inert_runtime(self):
+    def test_runtime_preparation_checks_dependencies_before_inert_runtime(self):
         systemd = RecordingSystemd()
         deployer = ReleaseDeployer(
             DeploymentPaths(
@@ -388,23 +391,54 @@ class DeploymentTests(unittest.TestCase):
             for arguments, _kwargs in systemd.commands
             if len(arguments) >= 3 and arguments[1] == "-c"
         ]
-        self.assertEqual(python_commands[0][2], RUNTIME_DEPENDENCY_IMPORT)
+        self.assertEqual(python_commands[0][2], RUNTIME_DEPENDENCY_CHECK)
         self.assertEqual(
             python_commands[1][2],
             "import skeleton_all_in_one_mqtt",
         )
-        for required in (
-            "adafruit_pca9685",
-            "board",
-            "busio",
-            "gpiozero",
-            "paho.mqtt.client",
-            "PiperVoice",
-            "sounddevice",
-            "vosk",
+
+    def test_dependency_check_does_not_import_hardware_adapters(self):
+        safe_modules = {
+            name: mock.Mock(PiperVoice=object())
+            for name in SAFE_RUNTIME_DEPENDENCY_MODULES
+        }
+
+        with mock.patch(
+            "holiday_skeleton.deployment.importlib.util.find_spec",
+            return_value=mock.sentinel.spec,
+        ) as find_spec, mock.patch(
+            "holiday_skeleton.deployment.importlib.import_module",
+            side_effect=lambda name: safe_modules[name],
+        ) as import_module:
+            validate_runtime_dependencies()
+
+        self.assertEqual(
+            [call.args[0] for call in find_spec.call_args_list],
+            list(HARDWARE_DEPENDENCY_MODULES),
+        )
+        self.assertEqual(
+            [call.args[0] for call in import_module.call_args_list],
+            list(SAFE_RUNTIME_DEPENDENCY_MODULES),
+        )
+        self.assertTrue(
+            set(HARDWARE_DEPENDENCY_MODULES).isdisjoint(
+                call.args[0] for call in import_module.call_args_list
+            )
+        )
+
+    def test_dependency_check_rejects_missing_hardware_adapter(self):
+        def find_spec(name):
+            return None if name == "gpiozero" else mock.sentinel.spec
+
+        with mock.patch(
+            "holiday_skeleton.deployment.importlib.util.find_spec",
+            side_effect=find_spec,
+        ), mock.patch(
+            "holiday_skeleton.deployment.importlib.import_module",
+            return_value=mock.Mock(PiperVoice=object()),
         ):
-            with self.subTest(required=required):
-                self.assertIn(required, RUNTIME_DEPENDENCY_IMPORT)
+            with self.assertRaisesRegex(DeploymentError, "missing gpiozero"):
+                validate_runtime_dependencies()
 
 
 class SystemdManagerTests(unittest.TestCase):

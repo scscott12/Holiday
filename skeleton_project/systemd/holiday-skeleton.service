@@ -10,7 +10,9 @@ User=scscott
 Group=scscott
 StateDirectory=holiday-skeleton
 StateDirectoryMode=0750
-WorkingDirectory=/opt/holiday-skeleton/current
+RuntimeDirectory=holiday-skeleton
+RuntimeDirectoryMode=0750
+WorkingDirectory=/run/holiday-skeleton
 ExecStart=/opt/holiday-skeleton/current/venv/bin/python /opt/holiday-skeleton/current/skeleton_all_in_one_mqtt.py
 Restart=always
 RestartSec=3
@@ -18,6 +20,7 @@ TimeoutStartSec=120
 TimeoutStopSec=20
 WatchdogSec=60
 Environment=PYTHONUNBUFFERED=1
+Environment=LG_WD=/run/holiday-skeleton
 SupplementaryGroups=gpio i2c audio video
 
 [Install]
