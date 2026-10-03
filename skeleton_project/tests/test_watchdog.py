@@ -1,3 +1,5 @@
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -96,13 +98,56 @@ class ControllerWatchdogTests(unittest.TestCase):
         watchdog.pulse("idle")
 
         self.assertTrue(watchdog.feed_once())
+        deadline = time.monotonic() + 1.0
+        while not snapshots and time.monotonic() < deadline:
+            time.sleep(0.001)
 
         snapshot = watchdog.snapshot()
         self.assertEqual(snapshot.state, WatchdogState.READY)
         self.assertEqual(snapshot.controller_state, "idle")
         self.assertEqual(snapshot.feed_count, 1)
         self.assertEqual(sent[-1][1], b"WATCHDOG=1")
+        self.assertTrue(snapshots)
         self.assertEqual(snapshots[-1].state, WatchdogState.READY)
+
+    def test_blocked_reporting_does_not_block_watchdog_feeding(self):
+        sent = []
+        reporting_started = threading.Event()
+        release_reporting = threading.Event()
+
+        def blocked_reporter(_snapshot):
+            reporting_started.set()
+            release_reporting.wait(2.0)
+
+        notifier = SystemdNotifier(
+            "/run/systemd/notify",
+            60.0,
+            sender=lambda _address, payload: sent.append(payload),
+        )
+        watchdog = ControllerWatchdog(
+            notifier,
+            stale_after_seconds=45.0,
+            changed=blocked_reporter,
+        )
+        watchdog.pulse("idle")
+
+        started = time.monotonic()
+        try:
+            self.assertTrue(watchdog.feed_once())
+            first_feed_seconds = time.monotonic() - started
+            self.assertTrue(reporting_started.wait(1.0))
+
+            watchdog.pulse("idle")
+            started = time.monotonic()
+            self.assertTrue(watchdog.feed_once())
+            second_feed_seconds = time.monotonic() - started
+        finally:
+            release_reporting.set()
+
+        self.assertLess(first_feed_seconds, 0.5)
+        self.assertLess(second_feed_seconds, 0.5)
+        self.assertEqual(sent.count(b"WATCHDOG=1"), 2)
+        self.assertEqual(watchdog.snapshot().feed_count, 2)
 
     def test_stale_controller_withholds_feed_then_recovers_on_progress(self):
         watchdog, clock, sent, _snapshots = self.make_watchdog()
