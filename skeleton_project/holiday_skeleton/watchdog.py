@@ -178,6 +178,9 @@ class ControllerWatchdog:
         self._ready_announced = False
         self._ready_message = "controller ready"
         self._lock = threading.RLock()
+        self._report_lock = threading.Lock()
+        self._pending_report: Optional[WatchdogSnapshot] = None
+        self._reporter_active = False
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -220,14 +223,50 @@ class ControllerWatchdog:
                 controller_state=self._controller_state,
             )
 
-    def _emit(self) -> None:
-        callback = self.changed
-        if callback is not None:
+    def _run_reporter(self) -> None:
+        """Deliver coalesced snapshots without blocking the watchdog feeder."""
+
+        while True:
+            with self._report_lock:
+                snapshot = self._pending_report
+                self._pending_report = None
+                if snapshot is None:
+                    self._reporter_active = False
+                    return
+
+            callback = self.changed
+            if callback is None:
+                continue
             try:
-                callback(self.snapshot())
+                callback(snapshot)
             except Exception:
-                # Watchdog reporting must never break watchdog feeding.
+                # Reporting is diagnostic and must never affect watchdog safety.
                 pass
+
+    def _emit(self) -> None:
+        if self.changed is None:
+            return
+
+        snapshot = self.snapshot()
+        with self._report_lock:
+            # A slow or blocked callback only retains the newest snapshot. The
+            # feeder remains free to notify systemd at its required interval.
+            self._pending_report = snapshot
+            if self._reporter_active:
+                return
+            self._reporter_active = True
+
+        reporter = threading.Thread(
+            target=self._run_reporter,
+            name="skeleton-watchdog-reporter",
+            daemon=True,
+        )
+        try:
+            reporter.start()
+        except (OSError, RuntimeError):
+            # Thread creation failure must not interrupt a successful feed.
+            with self._report_lock:
+                self._reporter_active = False
 
     def feed_once(self) -> bool:
         if not self.enabled or self._stop_event.is_set():
