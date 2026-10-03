@@ -1578,47 +1578,53 @@ def _schedule_motion_trigger():
 class _DummyPIR:
     motion_detected=False
     def close(self): pass
-pir=None
-if gpiozero is not None:
-    try:
-        pir=gpiozero.MotionSensor(PIR_PIN,queue_len=5,sample_rate=25,threshold=0.5)
-        def _pir_on():
-            global motion_count; motion_count+=1
-            locked=_maintenance_stop_requested()
-            if controller is not None and not locked:
-                controller.interrupt_idle()
-                controller.interrupt_scene()
-                controller.interrupt_self_test()
-                controller.interrupt_content_reload()
-            mqtt_pub("motion","ON"); mqtt_pub("motion/count",str(motion_count))
-            if not locked: _schedule_motion_trigger()
-        def _pir_off():
-            mqtt_pub("motion","OFF"); _cancel_motion_timer()
-        pir.when_motion=_pir_on; pir.when_no_motion=_pir_off; print("PIR ready")
-    except Exception as e: print("[pir]",e)
-if pir is None:
-    pir=_DummyPIR(); print("[pir] disabled; using dummy")
+pir=_DummyPIR()
 
-if busio and pca9685_mod and ada_servo_mod and board:
-    try:
-        i2c=busio.I2C(board.SCL,board.SDA)
-        _pca=pca9685_mod.PCA9685(i2c); _pca.frequency=PCA_FREQ
-        _eyes_ch=_pca.channels[EYES_CH]
-        _jaw=ada_servo_mod.Servo(_pca.channels[JAW_CH],min_pulse=JAW_MIN_US,max_pulse=JAW_MAX_US)
-    except Exception as e:
-        print("[PCA]",e); _pca=None; _eyes_ch=None; _jaw=None
-else:
-    print("[PCA] libs unavailable; eyes/jaw disabled")
+def _initialize_hardware():
+    """Open PIR and PCA devices only when the service actually starts."""
+    global pir,_pca,_eyes_ch,_jaw
+    if gpiozero is not None:
+        try:
+            pir=gpiozero.MotionSensor(PIR_PIN,queue_len=5,sample_rate=25,threshold=0.5)
+            def _pir_on():
+                global motion_count; motion_count+=1
+                locked=_maintenance_stop_requested()
+                if controller is not None and not locked:
+                    controller.interrupt_idle()
+                    controller.interrupt_scene()
+                    controller.interrupt_self_test()
+                    controller.interrupt_content_reload()
+                mqtt_pub("motion","ON"); mqtt_pub("motion/count",str(motion_count))
+                if not locked: _schedule_motion_trigger()
+            def _pir_off():
+                mqtt_pub("motion","OFF"); _cancel_motion_timer()
+            pir.when_motion=_pir_on; pir.when_no_motion=_pir_off; print("PIR ready")
+        except Exception as e:
+            print("[pir]",e); pir=_DummyPIR()
+    else:
+        print("[pir] disabled; using dummy")
+
+    if busio and pca9685_mod and ada_servo_mod and board:
+        try:
+            i2c=busio.I2C(board.SCL,board.SDA)
+            _pca=pca9685_mod.PCA9685(i2c); _pca.frequency=PCA_FREQ
+            _eyes_ch=_pca.channels[EYES_CH]
+            _jaw=ada_servo_mod.Servo(_pca.channels[JAW_CH],min_pulse=JAW_MIN_US,max_pulse=JAW_MAX_US)
+        except Exception as e:
+            print("[PCA]",e); _pca=None; _eyes_ch=None; _jaw=None
+    else:
+        print("[PCA] libs unavailable; eyes/jaw disabled")
+
+    eyes_safe_off_startup()
+    if _jaw:
+        try: _jaw.fraction=JAW_REST_FRAC
+        except Exception as e: print("[jaw init]",e)
 
 def eyes_safe_off_startup():
     try:
         if _eyes_ch is not None:
             _eyes_ch.duty_cycle=int(0xFFFF*(0.0 if not EYES_INVERT else 1.0))
     except Exception as e: print("[eyes startup off]",e)
-eyes_safe_off_startup()
-if '_jaw' in globals() and _jaw:
-    try: _jaw.fraction=JAW_REST_FRAC
-    except Exception as e: print("[jaw init]",e)
 
 def publish_mqtt_discovery():
     for topic,payload in discovery_messages(DEVICE_NAME,_personality_names()):
@@ -3884,6 +3890,7 @@ def _cleanup():
 
 def main():
     global controller,_runtime_ready
+    _initialize_hardware()
     _init_health_monitor()
     _init_event_journal()
     _init_systemd_watchdog()

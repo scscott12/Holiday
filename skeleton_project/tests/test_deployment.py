@@ -10,6 +10,7 @@ from holiday_skeleton.deployment import (
     DeploymentError,
     DeploymentPaths,
     ReleaseDeployer,
+    RUNTIME_DEPENDENCY_IMPORT,
     SystemdManager,
     validate_release_id,
 )
@@ -35,6 +36,20 @@ class FakeSystemd(SystemdManager):
         self.events.append("start-and-verify")
         if self.start_failures and self.start_failures.pop(0):
             raise DeploymentError("simulated readiness failure")
+
+
+class RecordingSystemd(FakeSystemd):
+    def __init__(self):
+        super().__init__()
+        self.commands = []
+
+    @staticmethod
+    def command_available(name):
+        return name != "systemd-analyze"
+
+    def run(self, arguments, **kwargs):
+        self.commands.append((arguments, kwargs))
+        return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
 
 
 class TestReleaseDeployer(ReleaseDeployer):
@@ -342,6 +357,54 @@ class DeploymentTests(unittest.TestCase):
 
         with self.assertRaisesRegex(DeploymentError, "changed after staging"):
             deployer._verify_manifest(release)
+
+    def test_manifest_rejects_runtime_created_fifo(self):
+        deployer = self._deployer()
+        deployer.preflight()
+        release = deployer._prepare_release("fifo-test")
+        os.mkfifo(release / ".lgd-nfy0")
+
+        with self.assertRaisesRegex(DeploymentError, "unsupported entry"):
+            deployer._verify_manifest(release)
+
+    def test_runtime_preparation_imports_dependencies_before_inert_runtime(self):
+        systemd = RecordingSystemd()
+        deployer = ReleaseDeployer(
+            DeploymentPaths(
+                source=self.source,
+                prefix=self.prefix,
+                state_directory=self.state,
+                service_unit=self.unit,
+            ),
+            systemd=systemd,
+            minimum_free_bytes=0,
+            settle_seconds=0,
+        )
+
+        deployer._prepare_runtime(self.source)
+
+        python_commands = [
+            arguments
+            for arguments, _kwargs in systemd.commands
+            if len(arguments) >= 3 and arguments[1] == "-c"
+        ]
+        self.assertEqual(python_commands[0][2], RUNTIME_DEPENDENCY_IMPORT)
+        self.assertEqual(
+            python_commands[1][2],
+            "import skeleton_all_in_one_mqtt",
+        )
+        for required in (
+            "adafruit_pca9685",
+            "board",
+            "busio",
+            "gpiozero",
+            "paho.mqtt.client",
+            "PiperVoice",
+            "sounddevice",
+            "vosk",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, RUNTIME_DEPENDENCY_IMPORT)
 
 
 class SystemdManagerTests(unittest.TestCase):

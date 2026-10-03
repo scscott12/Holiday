@@ -27,6 +27,11 @@ RELEASE_FILES = (
     "holiday_skeleton",
     "systemd",
 )
+RUNTIME_DEPENDENCY_IMPORT = (
+    "import adafruit_motor.servo; import adafruit_pca9685; import board; import busio; "
+    "import gpiozero; import numpy; import paho.mqtt.client; import requests; "
+    "import sounddevice; import vosk; from piper import PiperVoice"
+)
 SHARED_CONTENT = ("personalities.json", "scenes.json", "sounds")
 STATE_FILES = ("operator-settings.json", "diagnostic-events.json")
 MAX_CONTENT_FILES = 256
@@ -516,6 +521,12 @@ class ReleaseDeployer:
                 str(release / "skeleton_all_in_one_mqtt.py"),
             ],
             timeout=120.0,
+        )
+        self.systemd.run(
+            [str(python), "-c", RUNTIME_DEPENDENCY_IMPORT],
+            timeout=60.0,
+            capture=True,
+            cwd=release,
         )
         self.systemd.run(
             [str(python), "-c", "import skeleton_all_in_one_mqtt"],
