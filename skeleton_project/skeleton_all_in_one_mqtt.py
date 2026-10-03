@@ -84,15 +84,13 @@ def _safe_im(name, sub=None):
 sd          = _safe_im("sounddevice")
 requests    = _safe_im("requests")
 vosk        = _safe_im("vosk")
-gpiozero    = _safe_im("gpiozero")
-board       = _safe_im("board")
-busio       = _safe_im("busio")
-pca9685_mod = _safe_im("adafruit_pca9685")
-try:
-    import adafruit_motor.servo as ada_servo_mod
-except Exception as e:
-    print("[import] adafruit_motor.servo failed:", e)
-    ada_servo_mod = None
+# Importing Raspberry Pi GPIO adapter modules can create lgpio notification
+# FIFOs. Keep both those imports and device construction inside service startup.
+gpiozero = None
+board = None
+busio = None
+pca9685_mod = None
+ada_servo_mod = None
 paho = _safe_im("paho") or _safe_im("paho.mqtt.client")
 
 def clamp(x, lo, hi):
@@ -1583,6 +1581,12 @@ pir=_DummyPIR()
 def _initialize_hardware():
     """Open PIR and PCA devices only when the service actually starts."""
     global pir,_pca,_eyes_ch,_jaw
+    global gpiozero,board,busio,pca9685_mod,ada_servo_mod
+    gpiozero=_safe_im("gpiozero")
+    board=_safe_im("board")
+    busio=_safe_im("busio")
+    pca9685_mod=_safe_im("adafruit_pca9685")
+    ada_servo_mod=_safe_im("adafruit_motor.servo","servo")
     if gpiozero is not None:
         try:
             pir=gpiozero.MotionSensor(PIR_PIN,queue_len=5,sample_rate=25,threshold=0.5)

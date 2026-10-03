@@ -63,13 +63,22 @@ class RuntimeImportSafetyTests(unittest.TestCase):
                 run_name="holiday_skeleton_deployment_import_check",
             )
 
-        self.assertEqual(calls, [])
-        self.assertEqual(namespace["pir"].__class__.__name__, "_DummyPIR")
-        self.assertIsNone(namespace["_pca"])
-        self.assertIsNone(namespace["_eyes_ch"])
-        self.assertIsNone(namespace["_jaw"])
+            self.assertEqual(calls, [])
+            self.assertEqual(namespace["pir"].__class__.__name__, "_DummyPIR")
+            for name in (
+                "gpiozero",
+                "board",
+                "busio",
+                "pca9685_mod",
+                "ada_servo_mod",
+                "_pca",
+                "_eyes_ch",
+                "_jaw",
+            ):
+                with self.subTest(name=name):
+                    self.assertIsNone(namespace[name])
 
-        namespace["_initialize_hardware"]()
+            namespace["_initialize_hardware"]()
 
         self.assertEqual(calls, ["motion-sensor", "i2c", "pca9685", "servo"])
 

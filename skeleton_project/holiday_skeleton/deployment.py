@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
+import importlib.util
 import json
 import os
 import re
@@ -27,10 +29,24 @@ RELEASE_FILES = (
     "holiday_skeleton",
     "systemd",
 )
-RUNTIME_DEPENDENCY_IMPORT = (
-    "import adafruit_motor.servo; import adafruit_pca9685; import board; import busio; "
-    "import gpiozero; import numpy; import paho.mqtt.client; import requests; "
-    "import sounddevice; import vosk; from piper import PiperVoice"
+HARDWARE_DEPENDENCY_MODULES = (
+    "adafruit_motor.servo",
+    "adafruit_pca9685",
+    "board",
+    "busio",
+    "gpiozero",
+)
+SAFE_RUNTIME_DEPENDENCY_MODULES = (
+    "numpy",
+    "paho.mqtt.client",
+    "requests",
+    "sounddevice",
+    "vosk",
+    "piper",
+)
+RUNTIME_DEPENDENCY_CHECK = (
+    "from holiday_skeleton.deployment import validate_runtime_dependencies; "
+    "validate_runtime_dependencies()"
 )
 SHARED_CONTENT = ("personalities.json", "scenes.json", "sounds")
 STATE_FILES = ("operator-settings.json", "diagnostic-events.json")
@@ -42,6 +58,35 @@ DEPLOYMENT_RECORD_VERSION = 1
 
 class DeploymentError(RuntimeError):
     """A release could not be prepared, activated, or rolled back safely."""
+
+
+def validate_runtime_dependencies() -> None:
+    """Verify dependencies without importing GPIO/I2C adapter modules."""
+    missing = []
+    for name in HARDWARE_DEPENDENCY_MODULES:
+        try:
+            if importlib.util.find_spec(name) is None:
+                missing.append(name)
+        except (ImportError, AttributeError, ValueError):
+            missing.append(name)
+
+    failed = []
+    imported = {}
+    for name in SAFE_RUNTIME_DEPENDENCY_MODULES:
+        try:
+            imported[name] = importlib.import_module(name)
+        except Exception as error:
+            failed.append(f"{name}: {error}")
+    if "piper" in imported and not hasattr(imported["piper"], "PiperVoice"):
+        failed.append("piper: PiperVoice is unavailable")
+
+    if missing or failed:
+        details = []
+        if missing:
+            details.append("missing " + ", ".join(missing))
+        if failed:
+            details.append("unusable " + "; ".join(failed))
+        raise DeploymentError("runtime dependency check failed: " + "; ".join(details))
 
 
 def utc_now() -> str:
@@ -523,7 +568,7 @@ class ReleaseDeployer:
             timeout=120.0,
         )
         self.systemd.run(
-            [str(python), "-c", RUNTIME_DEPENDENCY_IMPORT],
+            [str(python), "-c", RUNTIME_DEPENDENCY_CHECK],
             timeout=60.0,
             capture=True,
             cwd=release,

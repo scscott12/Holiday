@@ -187,6 +187,9 @@ class ControllerWatchdogTests(unittest.TestCase):
         self.assertIn("NotifyAccess=main", service)
         self.assertIn("WatchdogSec=60", service)
         self.assertIn("Restart=always", service)
+        self.assertIn("RuntimeDirectory=holiday-skeleton", service)
+        self.assertIn("WorkingDirectory=/run/holiday-skeleton", service)
+        self.assertIn("Environment=LG_WD=/run/holiday-skeleton", service)
 
 
 if __name__ == "__main__":
