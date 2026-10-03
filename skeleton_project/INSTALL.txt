@@ -19,7 +19,8 @@ sudo systemctl enable holiday-skeleton
 sudo journalctl -u holiday-skeleton -f
 
 # The deployer builds a fresh venv below /opt/holiday-skeleton/releases, verifies
-# dependencies, code, content, and the systemd unit before stopping the old service,
+# dependencies, code, content, and the systemd unit without opening prop hardware,
+# all before stopping the old service,
 # then atomically switches /opt/holiday-skeleton/current. It preserves existing
 # scenes.json, personalities.json, and sounds at /opt/holiday-skeleton.
 # Settings, content, and the prior unit are backed up under the root-only
