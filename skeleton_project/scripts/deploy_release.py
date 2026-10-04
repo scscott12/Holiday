@@ -30,8 +30,18 @@ DEFAULT_LOCK = Path("/run/lock/holiday-skeleton-deploy.lock")
 
 def _source_commit(source: Path) -> str:
     try:
+        resolved_source = source.resolve()
         completed = subprocess.run(
-            ["git", "-C", str(source), "rev-parse", "--short=12", "HEAD"],
+            [
+                "git",
+                "-c",
+                f"safe.directory={resolved_source}",
+                "-C",
+                str(resolved_source),
+                "rev-parse",
+                "--short=12",
+                "HEAD",
+            ],
             check=True,
             capture_output=True,
             text=True,
