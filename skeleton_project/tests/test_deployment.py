@@ -236,10 +236,13 @@ class DeploymentTests(unittest.TestCase):
             0o640,
         )
 
-    def test_manifest_allows_exact_source_for_root_git_provenance(self):
+    def test_manifest_allows_nested_worktree_root_for_git_provenance(self):
+        # The deployed skeleton project is nested below the Holiday checkout.
+        # Git's safe.directory must name the worktree root, not that subdirectory.
+        (self.root / ".git").mkdir()
         release = self.root / "release"
         release.mkdir()
-        commit = "71f70442964b96bee3a1fa422e654bb621c91412"
+        commit = "9388be8477ca798b4d5ceba5fafb8ff4bce14197"
         completed = subprocess.CompletedProcess(
             args=[],
             returncode=0,
@@ -259,7 +262,7 @@ class DeploymentTests(unittest.TestCase):
             [
                 "git",
                 "-c",
-                f"safe.directory={resolved_source}",
+                f"safe.directory={self.root.resolve()}",
                 "-C",
                 str(resolved_source),
                 "rev-parse",
