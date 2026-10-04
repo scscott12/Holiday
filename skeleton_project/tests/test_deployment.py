@@ -1,5 +1,6 @@
 import json
 import os
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -14,6 +15,7 @@ from holiday_skeleton.deployment import (
     RUNTIME_DEPENDENCY_CHECK,
     SAFE_RUNTIME_DEPENDENCY_MODULES,
     SystemdManager,
+    _copy_path_metadata,
     validate_runtime_dependencies,
     validate_release_id,
 )
@@ -132,6 +134,39 @@ class DeploymentTests(unittest.TestCase):
         (self.state / "diagnostic-events.json").write_text(
             '{"version": 1}\n', encoding="utf-8"
         )
+        os.chmod(self.unit, 0o644)
+        os.chmod(self.prefix / "personalities.json", 0o644)
+        os.chmod(self.prefix / "scenes.json", 0o640)
+        os.chmod(self.prefix / "sounds", 0o750)
+        os.chmod(self.prefix / "sounds" / "custom.wav", 0o640)
+        os.chmod(self.state / "operator-settings.json", 0o600)
+        os.chmod(self.state / "diagnostic-events.json", 0o640)
+
+    @staticmethod
+    def _mode(path):
+        return stat.S_IMODE(path.stat().st_mode)
+
+    def _assert_legacy_metadata(self):
+        self.assertEqual(self._mode(self.unit), 0o644)
+        self.assertEqual(self._mode(self.prefix / "personalities.json"), 0o644)
+        self.assertEqual(self._mode(self.prefix / "scenes.json"), 0o640)
+        self.assertEqual(self._mode(self.prefix / "sounds"), 0o750)
+        self.assertEqual(self._mode(self.prefix / "sounds" / "custom.wav"), 0o640)
+        self.assertEqual(self._mode(self.state / "operator-settings.json"), 0o600)
+        self.assertEqual(self._mode(self.state / "diagnostic-events.json"), 0o640)
+        expected_owner = (os.getuid(), os.getgid())
+        for path in (
+            self.unit,
+            self.prefix / "personalities.json",
+            self.prefix / "scenes.json",
+            self.prefix / "sounds",
+            self.prefix / "sounds" / "custom.wav",
+            self.state / "operator-settings.json",
+            self.state / "diagnostic-events.json",
+        ):
+            with self.subTest(path=path):
+                status = path.stat()
+                self.assertEqual((status.st_uid, status.st_gid), expected_owner)
 
     def _old_versioned_install(self):
         self._legacy_install()
@@ -183,6 +218,22 @@ class DeploymentTests(unittest.TestCase):
             result.backup_path.joinpath("state/operator-settings.json").read_text(),
             '{"version": 3}\n',
         )
+        self.assertEqual(
+            self._mode(result.backup_path / "content" / "personalities.json"),
+            0o644,
+        )
+        self.assertEqual(
+            self._mode(result.backup_path / "content" / "scenes.json"),
+            0o640,
+        )
+        self.assertEqual(
+            self._mode(result.backup_path / "state" / "operator-settings.json"),
+            0o600,
+        )
+        self.assertEqual(
+            self._mode(result.backup_path / "state" / "diagnostic-events.json"),
+            0o640,
+        )
 
     def test_failed_health_check_restores_versioned_release_unit_state_and_content(self):
         old = self._old_versioned_install()
@@ -198,6 +249,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(self.unit.read_text(encoding="utf-8"), "legacy unit\n")
         self.assertEqual((self.state / "operator-settings.json").read_bytes(), original_settings)
         self.assertEqual((self.prefix / "scenes.json").read_bytes(), original_content)
+        self._assert_legacy_metadata()
         self.assertEqual(
             systemd.events,
             [
@@ -242,6 +294,7 @@ class DeploymentTests(unittest.TestCase):
 
         self.assertEqual((self.prefix / "current").resolve(), old.resolve())
         self.assertEqual(self.unit.read_text(encoding="utf-8"), "legacy unit\n")
+        self._assert_legacy_metadata()
         self.assertEqual(
             systemd.events,
             ["stop", "daemon-reload", "stop", "daemon-reload", "start-and-verify"],
@@ -286,6 +339,7 @@ class DeploymentTests(unittest.TestCase):
             (self.prefix / "scenes.json").read_text(encoding="utf-8"),
             '{"scenes": ["custom"]}\n',
         )
+        self._assert_legacy_metadata()
         with self.assertRaisesRegex(DeploymentError, "not an active rollback candidate"):
             deployer.rollback_last()
 
@@ -312,6 +366,8 @@ class DeploymentTests(unittest.TestCase):
             "new settings", encoding="utf-8"
         )
         (self.prefix / "scenes.json").write_text("new scenes", encoding="utf-8")
+        os.chmod(self.state / "operator-settings.json", 0o640)
+        os.chmod(self.prefix / "scenes.json", 0o604)
         systemd.start_failures.extend((True, False))
 
         with self.assertRaisesRegex(
@@ -328,6 +384,8 @@ class DeploymentTests(unittest.TestCase):
             (self.prefix / "scenes.json").read_text(encoding="utf-8"),
             "new scenes",
         )
+        self.assertEqual(self._mode(self.state / "operator-settings.json"), 0o640)
+        self.assertEqual(self._mode(self.prefix / "scenes.json"), 0o604)
         self.assertTrue(old.exists())
         record = json.loads(deployer.paths.record.read_text(encoding="utf-8"))
         self.assertEqual(record["status"], "active")
@@ -396,6 +454,33 @@ class DeploymentTests(unittest.TestCase):
             python_commands[1][2],
             "import skeleton_all_in_one_mqtt",
         )
+
+        pip_commands = [
+            arguments
+            for arguments, _kwargs in systemd.commands
+            if len(arguments) >= 4 and arguments[1:4] == ["-m", "pip", "install"]
+        ]
+        self.assertEqual(len(pip_commands), 1)
+        pip_command = pip_commands[0]
+        self.assertEqual(pip_command[pip_command.index("--timeout") + 1], "120")
+        self.assertEqual(pip_command[pip_command.index("--retries") + 1], "10")
+        self.assertNotIn("--no-cache-dir", pip_command)
+
+    def test_metadata_copy_restores_recorded_owner_before_mode(self):
+        source = mock.Mock()
+        destination = mock.Mock()
+        source.stat.return_value = mock.Mock(st_uid=1000, st_gid=1000)
+        destination.stat.return_value = mock.Mock(st_uid=0, st_gid=0)
+
+        with mock.patch(
+            "holiday_skeleton.deployment.os.chown"
+        ) as chown, mock.patch(
+            "holiday_skeleton.deployment.shutil.copystat"
+        ) as copystat:
+            _copy_path_metadata(source, destination)
+
+        chown.assert_called_once_with(destination, 1000, 1000)
+        copystat.assert_called_once_with(source, destination)
 
     def test_dependency_check_does_not_import_hardware_adapters(self):
         safe_modules = {

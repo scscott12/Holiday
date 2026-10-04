@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -176,6 +177,30 @@ def _atomic_write(path: Path, data: bytes, mode: int = 0o600) -> None:
 def _atomic_json(path: Path, payload: dict[str, Any], mode: int = 0o600) -> None:
     encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
     _atomic_write(path, encoded, mode)
+
+
+def _copy_path_metadata(source: Path, destination: Path) -> None:
+    """Copy ownership, mode, timestamps, and supported extended metadata."""
+    source_status = source.stat()
+    destination_status = destination.stat()
+    if (
+        destination_status.st_uid != source_status.st_uid
+        or destination_status.st_gid != source_status.st_gid
+    ):
+        os.chown(destination, source_status.st_uid, source_status.st_gid)
+    # Apply the mode after chown because chown may clear setuid/setgid bits.
+    shutil.copystat(source, destination)
+
+
+def _copy_tree_metadata(source: Path, destination: Path) -> None:
+    entries = [source, *source.rglob("*")]
+    for source_entry in sorted(
+        entries,
+        key=lambda path: len(path.relative_to(source).parts),
+        reverse=True,
+    ):
+        relative = source_entry.relative_to(source)
+        _copy_path_metadata(source_entry, destination / relative)
 
 
 @dataclass(frozen=True)
@@ -549,7 +574,10 @@ class ReleaseDeployer:
                 "install",
                 "--disable-pip-version-check",
                 "--isolated",
-                "--no-cache-dir",
+                "--timeout",
+                "120",
+                "--retries",
+                "10",
                 "--requirement",
                 str(release / "requirements.txt"),
             ],
@@ -700,13 +728,12 @@ class ReleaseDeployer:
         if source.is_file():
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
-            os.chmod(destination, 0o600)
+            _copy_path_metadata(source, destination)
         elif source.is_dir():
             files = _tree_files(source)
             _bounded_content(files)
             shutil.copytree(source, destination, symlinks=False)
-            for path in destination.rglob("*"):
-                os.chmod(path, 0o700 if path.is_dir() else 0o600)
+            _copy_tree_metadata(source, destination)
 
     def _create_backup(
         self,
@@ -804,13 +831,16 @@ class ReleaseDeployer:
         if not backup.exists():
             raise DeploymentError(f"backup is missing required entry: {backup}")
         if backup.is_file():
-            _atomic_write(target, backup.read_bytes(), mode=0o600)
+            backup_mode = stat.S_IMODE(backup.stat().st_mode)
+            _atomic_write(target, backup.read_bytes(), mode=backup_mode)
+            _copy_path_metadata(backup, target)
             return
         if target.is_symlink() or target.is_file():
             target.unlink()
         elif target.is_dir():
             shutil.rmtree(target)
         shutil.copytree(backup, target, symlinks=False)
+        _copy_tree_metadata(backup, target)
 
     def _load_backup(self, backup: Path) -> dict[str, Any]:
         metadata_path = backup / "backup.json"
@@ -854,7 +884,7 @@ class ReleaseDeployer:
             )
         if metadata["unit_existed"]:
             unit_backup = backup / "systemd" / self.paths.service_unit.name
-            _atomic_write(self.paths.service_unit, unit_backup.read_bytes(), mode=0o644)
+            self._restore_entry(unit_backup, self.paths.service_unit, True)
         elif self.paths.service_unit.exists():
             self.paths.service_unit.unlink()
         return metadata
