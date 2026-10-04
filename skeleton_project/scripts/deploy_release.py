@@ -22,6 +22,7 @@ from holiday_skeleton.deployment import (
     DeploymentError,
     DeploymentPaths,
     ReleaseDeployer,
+    git_worktree_root,
 )
 
 
@@ -31,11 +32,12 @@ DEFAULT_LOCK = Path("/run/lock/holiday-skeleton-deploy.lock")
 def _source_commit(source: Path) -> str:
     try:
         resolved_source = source.resolve()
+        safe_directory = git_worktree_root(resolved_source)
         completed = subprocess.run(
             [
                 "git",
                 "-c",
-                f"safe.directory={resolved_source}",
+                f"safe.directory={safe_directory}",
                 "-C",
                 str(resolved_source),
                 "rev-parse",
