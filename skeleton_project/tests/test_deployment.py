@@ -236,6 +236,41 @@ class DeploymentTests(unittest.TestCase):
             0o640,
         )
 
+    def test_manifest_allows_exact_source_for_root_git_provenance(self):
+        release = self.root / "release"
+        release.mkdir()
+        commit = "71f70442964b96bee3a1fa422e654bb621c91412"
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=f"{commit}\n",
+            stderr="",
+        )
+
+        with mock.patch(
+            "holiday_skeleton.deployment.subprocess.run",
+            return_value=completed,
+        ) as run:
+            manifest = self._deployer()._release_manifest("v1-test", release)
+
+        self.assertEqual(manifest["source_commit"], commit)
+        resolved_source = self.source.resolve()
+        run.assert_called_once_with(
+            [
+                "git",
+                "-c",
+                f"safe.directory={resolved_source}",
+                "-C",
+                str(resolved_source),
+                "rev-parse",
+                "HEAD",
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+            timeout=10.0,
+        )
+
     def test_failed_health_check_restores_versioned_release_unit_state_and_content(self):
         old = self._old_versioned_install()
         original_settings = (self.state / "operator-settings.json").read_bytes()
