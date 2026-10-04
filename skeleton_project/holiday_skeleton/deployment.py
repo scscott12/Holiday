@@ -673,8 +673,19 @@ class ReleaseDeployer:
         files = self._manifest_inventory(release)
         source_commit = "unknown"
         try:
+            # Deployment normally runs as root against an operator-owned
+            # checkout. Trust only the exact selected source directory for this
+            # read-only provenance lookup instead of changing global Git config.
             completed = subprocess.run(
-                ["git", "-C", str(self.paths.source), "rev-parse", "HEAD"],
+                [
+                    "git",
+                    "-c",
+                    f"safe.directory={self.paths.source}",
+                    "-C",
+                    str(self.paths.source),
+                    "rev-parse",
+                    "HEAD",
+                ],
                 check=True,
                 text=True,
                 capture_output=True,
