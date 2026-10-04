@@ -15,9 +15,11 @@ The release and acceptance tools do not update Raspberry Pi OS, firmware, MQTT c
 `v1.0-rc1` was rejected during power-cycle acceptance after its first runtime
 blocked watchdog reporting and systemd restarted it. `v1.0-rc2` corrected that
 failure, but was rejected when rollback restored private backup permissions and
-root ownership over operator content/state. Use the distinct `v1.0-rc3`
-identity and a new evidence bundle for the corrected candidate; do not reuse or
-overwrite either rejected candidate or its evidence.
+root ownership over operator content/state. `v1.0-rc3` preserved that metadata,
+but was rejected before activation when the complete dependency installation
+exceeded its 900-second outer command deadline on the Pi's slow connection. Use
+the distinct `v1.0-rc4` identity and a new evidence bundle for the corrected
+candidate; do not reuse or overwrite any rejected candidate or its evidence.
 
 Run the CI gate on the exact commit intended for release:
 
@@ -37,32 +39,32 @@ The status output must be empty and `SKELETON_RC_COMMIT` must be the merged, CI-
 Rehearse both rollback paths from that source before installing the final candidate identity:
 
 ```bash
-sudo python3 scripts/deploy_release.py --release-id v1.0-rc3-rollback-rehearsal
+sudo python3 scripts/deploy_release.py --release-id v1.0-rc4-rollback-rehearsal
 
 # Lock Maintenance Mode, disconnect actuator power, and verify safe outputs first.
 sudo python3 scripts/deploy_release.py \
-  --release-id v1.0-rc3-injected-failure \
+  --release-id v1.0-rc4-injected-failure \
   --simulate-activation-failure \
   --confirm-maintenance-lockout
 ```
 
-The injected command must exit with failure after reporting that automatic rollback succeeded. Confirm `current` still points to `v1.0-rc3-rollback-rehearsal`, the prior settings/content/unit ownership and modes were restored exactly before service startup, and the service is healthy. Then exercise the last-successful-deployment rollback and install the final candidate:
+The injected command must exit with failure after reporting that automatic rollback succeeded. Confirm `current` still points to `v1.0-rc4-rollback-rehearsal`, the prior settings/content/unit ownership and modes were restored exactly before service startup, and the service is healthy. Then exercise the last-successful-deployment rollback and install the final candidate:
 
 ```bash
 sudo python3 scripts/deploy_release.py --rollback
-sudo python3 scripts/deploy_release.py --release-id v1.0-rc3
+sudo python3 scripts/deploy_release.py --release-id v1.0-rc4
 sudo systemctl enable holiday-skeleton
 sudo systemctl status holiday-skeleton --no-pager
 ```
 
-Confirm `/opt/holiday-skeleton/current` resolves to `releases/v1.0-rc3` and its `release-manifest.json` contains the exact full commit in `SKELETON_RC_COMMIT`. Existing settings, journal, personalities, scenes, sounds, and the systemd override must retain their exact content, ownership, and modes.
+Confirm `/opt/holiday-skeleton/current` resolves to `releases/v1.0-rc4` and its `release-manifest.json` contains the exact full commit in `SKELETON_RC_COMMIT`. Existing settings, journal, personalities, scenes, sounds, and the systemd override must retain their exact content, ownership, and modes.
 
 Initialize the private evidence bundle only after the final candidate is active and healthy:
 
 ```bash
-SKELETON_RC_EVIDENCE=/var/lib/holiday-skeleton-deploy/acceptance/v1.0-rc3.json
+SKELETON_RC_EVIDENCE=/var/lib/holiday-skeleton-deploy/acceptance/v1.0-rc4.json
 sudo python3 scripts/release_candidate.py init \
-  --candidate v1.0-rc3 \
+  --candidate v1.0-rc4 \
   --expected-commit "$SKELETON_RC_COMMIT" \
   --evidence "$SKELETON_RC_EVIDENCE"
 ```
@@ -85,7 +87,7 @@ sudo python3 scripts/release_candidate.py record \
 
 Complete these checks:
 
-1. `deploy_verified` — service is `active/running`, native readiness completed, the watchdog is `1min`, the active manifest matches `v1.0-rc3` and the expected commit, and operator content/state survived deployment.
+1. `deploy_verified` — service is `active/running`, native readiness completed, the watchdog is `1min`, the active manifest matches `v1.0-rc4` and the expected commit, and operator content/state survived deployment.
 2. `calibration_self_test` — in Maintenance Mode with Night Mode off, walk all nine calibration steps; save and restart; then run the manual self-test and physically observe both eyes, both bounded jaw moves, audible speech, jaw rest, and idle eyes. Repeat cancellation and interruption paths.
 3. `conversation_audio` — run two motion visits and Home Assistant Say; confirm streaming Piper, canned greeting cache hits, no temporary-WAV path, jaw/audio alignment, follow-up memory within one visit, memory clearing afterward, first audio before full Ollama completion, and zero dropped audio frames.
 4. `barge_in_preemption` — during long speech verify `wait` returns to listening and `stop` ends without goodbye. During idle speech/self-test/scene, verify PIR and MQTT interruption restore jaw/eyes before higher-priority work begins. Ordinary generated speech containing command words must not interrupt itself.
@@ -94,8 +96,8 @@ Complete these checks:
 7. `settings_restart` — save personality, motion/idle, night, eye/volume, maintenance, and calibrated hardware values; restart cleanly and confirm exact restoration. Both state files must be regular `0600` files.
 8. `power_cycle` — shut down cleanly, remove Pi/prop power for at least 30 seconds, restore power, and confirm automatic boot, network/MQTT reconnect, systemd readiness, saved settings, content, maintenance state, watchdog, Home Assistant discovery, and one normal visitor flow. No `unclean_restart` should be recorded for the clean shutdown.
 9. `watchdog_recovery` — lock Maintenance Mode, disconnect actuator power, and confirm safe outputs. Record the main PID and then run `sudo systemctl kill --kill-whom=main --signal=STOP holiday-skeleton`. Within the watchdog/restart window, systemd must replace the process, readiness and MQTT telemetry must return, `NRestarts` must increment once, and the journal must record the unclean recovery. If it does not recover within two minutes, run `sudo systemctl kill --kill-whom=main --signal=CONT holiday-skeleton` followed by `sudo systemctl restart holiday-skeleton`, mark the check failed, and diagnose before continuing.
-10. `deployment_rollback` — record the earlier double-confirmed `v1.0-rc3-injected-failure` result: the staged link switched, the candidate never started, and the prior link/settings/content/unit ownership, modes, and service were restored by the real automatic rollback transaction.
-11. `manual_rollback` — record the earlier `--rollback` result: it restored the exact prior release and snapshot content/ownership/modes before startup, refused stale/repeated rollback, and the final `v1.0-rc3` redeployment returned healthy.
+10. `deployment_rollback` — record the earlier double-confirmed `v1.0-rc4-injected-failure` result: the staged link switched, the candidate never started, and the prior link/settings/content/unit ownership, modes, and service were restored by the real automatic rollback transaction.
+11. `manual_rollback` — record the earlier `--rollback` result: it restored the exact prior release and snapshot content/ownership/modes before startup, refused stale/repeated rollback, and the final `v1.0-rc4` redeployment returned healthy.
 12. `journal_privacy` — confirm bounded retention, monotonic sequences, expected restart/reload/self-test/calibration/maintenance events, and capped Home Assistant recent attributes. Inspect locally for visitor phrases, prompts, replies, broker usernames/passwords, bearer/access/refresh tokens, client secrets, and API keys; none may be present. Do not copy any visitor text into the acceptance note.
 
 Check progress at any time:

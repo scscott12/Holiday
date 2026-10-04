@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from holiday_skeleton.deployment import (
+    DEPENDENCY_INSTALL_TIMEOUT_SECONDS,
     DeploymentError,
     DeploymentPaths,
     HARDWARE_DEPENDENCY_MODULES,
@@ -455,16 +456,19 @@ class DeploymentTests(unittest.TestCase):
             "import skeleton_all_in_one_mqtt",
         )
 
-        pip_commands = [
-            arguments
-            for arguments, _kwargs in systemd.commands
+        pip_runs = [
+            (arguments, kwargs)
+            for arguments, kwargs in systemd.commands
             if len(arguments) >= 4 and arguments[1:4] == ["-m", "pip", "install"]
         ]
-        self.assertEqual(len(pip_commands), 1)
-        pip_command = pip_commands[0]
+        self.assertEqual(len(pip_runs), 1)
+        pip_command, pip_kwargs = pip_runs[0]
         self.assertEqual(pip_command[pip_command.index("--timeout") + 1], "120")
         self.assertEqual(pip_command[pip_command.index("--retries") + 1], "10")
         self.assertNotIn("--no-cache-dir", pip_command)
+        self.assertEqual(
+            pip_kwargs["timeout"], DEPENDENCY_INSTALL_TIMEOUT_SECONDS
+        )
 
     def test_metadata_copy_restores_recorded_owner_before_mode(self):
         source = mock.Mock()
