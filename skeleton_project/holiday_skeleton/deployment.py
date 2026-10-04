@@ -117,6 +117,16 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def git_worktree_root(source: Path) -> Path:
+    """Return the checkout root containing source without invoking Git."""
+    resolved = source.resolve()
+    for candidate in (resolved, *resolved.parents):
+        marker = candidate / ".git"
+        if marker.is_dir() or marker.is_file():
+            return candidate
+    return resolved
+
+
 def _tree_files(root: Path) -> list[Path]:
     files: list[Path] = []
     if not root.exists():
@@ -674,13 +684,15 @@ class ReleaseDeployer:
         source_commit = "unknown"
         try:
             # Deployment normally runs as root against an operator-owned
-            # checkout. Trust only the exact selected source directory for this
-            # read-only provenance lookup instead of changing global Git config.
+            # checkout. The deployable project may be nested below the Git
+            # worktree root, so trust that discovered root only for this
+            # read-only provenance lookup.
+            safe_directory = git_worktree_root(self.paths.source)
             completed = subprocess.run(
                 [
                     "git",
                     "-c",
-                    f"safe.directory={self.paths.source}",
+                    f"safe.directory={safe_directory}",
                     "-C",
                     str(self.paths.source),
                     "rev-parse",
