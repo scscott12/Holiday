@@ -55,6 +55,7 @@ MAX_CONTENT_FILES = 256
 MAX_CONTENT_BYTES = 128 * 1024 * 1024
 MAX_STATE_FILE_BYTES = 1024 * 1024
 DEPLOYMENT_RECORD_VERSION = 1
+DEPENDENCY_INSTALL_TIMEOUT_SECONDS = 3600.0
 
 
 class DeploymentError(RuntimeError):
@@ -581,7 +582,11 @@ class ReleaseDeployer:
                 "--requirement",
                 str(release / "requirements.txt"),
             ],
-            timeout=900.0,
+            # The Pi's connection can be slow enough that the 34 MiB Piper
+            # wheel alone takes more than ten minutes. Pip still enforces its
+            # per-request timeout and retry budget above; this outer deadline
+            # only bounds the complete dependency transaction.
+            timeout=DEPENDENCY_INSTALL_TIMEOUT_SECONDS,
             capture=False,
         )
         self.systemd.run(
