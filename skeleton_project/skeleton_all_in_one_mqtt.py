@@ -1184,9 +1184,16 @@ def _start_barge_in_monitor():
         except Exception: pass
         return recognizer
 
+    def verification_recognizer_factory():
+        recognizer=vosk.KaldiRecognizer(_VOSK_MODEL,VOSK_RATE)
+        try: recognizer.SetWords(False)
+        except Exception: pass
+        return recognizer
+
     monitor=BargeInMonitor(
         audio_module=sd,
         recognizer_factory=recognizer_factory,
+        verification_recognizer_factory=verification_recognizer_factory,
         matcher=_barge_in_matcher,
         input_device=in_idx,
         capture_rate=BARGE_IN_CAPTURE_RATE,

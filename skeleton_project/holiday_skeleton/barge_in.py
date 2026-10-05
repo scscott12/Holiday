@@ -7,6 +7,7 @@ import queue
 import re
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Callable, Iterable, Optional
@@ -34,6 +35,15 @@ class BargeInMatch:
 
 def _normalize(text: Any) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+
+
+def _contains_phrase(text: Any, phrase: Any) -> bool:
+    normalized_text = f" {_normalize(text)} "
+    normalized_phrase = _normalize(phrase)
+    return bool(
+        normalized_phrase
+        and f" {normalized_phrase} " in normalized_text
+    )
 
 
 class BargeInMatcher:
@@ -158,7 +168,7 @@ class AnyStopEvent:
 
 
 class BargeInMonitor:
-    """Run a constrained Vosk recognizer beside active speaker playback."""
+    """Run corroborated Vosk command recognition beside speaker playback."""
 
     def __init__(
         self,
@@ -170,6 +180,7 @@ class BargeInMonitor:
         recognition_rate: int,
         blocksize: int,
         energy_threshold: float,
+        verification_recognizer_factory: Optional[Callable[[], Any]] = None,
         minimum_voiced_seconds: float = 0.10,
         preroll_seconds: float = 0.20,
         end_silence_seconds: float = 0.30,
@@ -179,6 +190,7 @@ class BargeInMonitor:
     ) -> None:
         self.audio_module = audio_module
         self.recognizer_factory = recognizer_factory
+        self.verification_recognizer_factory = verification_recognizer_factory
         self.matcher = matcher
         self.input_device = input_device
         self.capture_rate = int(capture_rate)
@@ -195,7 +207,7 @@ class BargeInMonitor:
         self.interrupt_event = threading.Event()
         self._monitor_stop = threading.Event()
         self._expected_lock = threading.Lock()
-        self._expected_speech = ""
+        self._expected_speech: deque[str] = deque(maxlen=8)
         self._result_lock = threading.Lock()
         self._result: Optional[BargeInMatch] = None
         self.error: Optional[str] = None
@@ -211,12 +223,15 @@ class BargeInMonitor:
         return bool(self._thread and self._thread.is_alive())
 
     def set_expected_speech(self, text: str) -> None:
+        phrase = str(text or "").strip()
+        if not phrase:
+            return
         with self._expected_lock:
-            self._expected_speech = str(text or "")
+            self._expected_speech.append(phrase)
 
     def _expected(self) -> str:
         with self._expected_lock:
-            return self._expected_speech
+            return " ".join(self._expected_speech)
 
     @staticmethod
     def _result_text(payload: str, key: str) -> str:
@@ -265,6 +280,11 @@ class BargeInMonitor:
         try:
             grammar = json.dumps(self.matcher.grammar)
             recognizer = self.recognizer_factory(grammar)
+            verification_recognizer = (
+                self.verification_recognizer_factory()
+                if self.verification_recognizer_factory is not None
+                else None
+            )
             with self.audio_module.RawInputStream(
                 samplerate=self.capture_rate,
                 blocksize=self.blocksize,
@@ -290,13 +310,36 @@ class BargeInMonitor:
                     if not gated.audio.size:
                         continue
 
-                    final = bool(recognizer.AcceptWaveform(gated.audio.tobytes()))
+                    audio = gated.audio.tobytes()
+                    final = bool(recognizer.AcceptWaveform(audio))
                     if final:
                         transcript = self._result_text(recognizer.Result(), "text")
                     else:
                         transcript = self._result_text(
                             recognizer.PartialResult(), "partial"
                         )
+
+                    if verification_recognizer is not None:
+                        # A constrained grammar can force unrelated speaker echo
+                        # into its nearest command.  Require the unrestricted
+                        # decoder to hear the same phrase before it may stop TTS.
+                        verification_final = bool(
+                            verification_recognizer.AcceptWaveform(audio)
+                        )
+                        if verification_final:
+                            verification_text = self._result_text(
+                                verification_recognizer.Result(),
+                                "text",
+                            )
+                        else:
+                            verification_text = self._result_text(
+                                verification_recognizer.PartialResult(),
+                                "partial",
+                            )
+                        if not _contains_phrase(verification_text, transcript):
+                            detector.inspect("", expected_speech=self._expected())
+                            continue
+
                     match = detector.inspect(
                         transcript,
                         expected_speech=self._expected(),
