@@ -122,6 +122,14 @@ class FakeRecognizer:
         return json.dumps({"text": ""})
 
 
+class FakeVerificationRecognizer(FakeRecognizer):
+    def __init__(self, transcript):
+        self.transcript = transcript
+
+    def PartialResult(self):
+        return json.dumps({"partial": self.transcript})
+
+
 class FakeInputStream:
     def __init__(self, callback):
         self.callback = callback
@@ -167,6 +175,67 @@ class BargeInMonitorTests(unittest.TestCase):
 
         self.assertEqual(result.transcript, "stop")
         self.assertIn("[unk]", grammars[0])
+
+    def test_full_vocabulary_verifier_rejects_constrained_echo_hallucination(self):
+        monitor = BargeInMonitor(
+            audio_module=FakeAudio(),
+            recognizer_factory=lambda grammar: FakeRecognizer(),
+            verification_recognizer_factory=lambda: FakeVerificationRecognizer(
+                "ordinary generated speech"
+            ),
+            matcher=BargeInMatcher(),
+            input_device=1,
+            capture_rate=1000,
+            recognition_rate=1000,
+            blocksize=100,
+            energy_threshold=10,
+            minimum_voiced_seconds=0.05,
+            partial_confirmations=2,
+        ).start()
+
+        self.assertFalse(monitor.interrupt_event.wait(timeout=0.1))
+        self.assertIsNone(monitor.stop())
+
+    def test_full_vocabulary_verifier_accepts_audible_command(self):
+        monitor = BargeInMonitor(
+            audio_module=FakeAudio(),
+            recognizer_factory=lambda grammar: FakeRecognizer(),
+            verification_recognizer_factory=lambda: FakeVerificationRecognizer(
+                "please stop"
+            ),
+            matcher=BargeInMatcher(),
+            input_device=1,
+            capture_rate=1000,
+            recognition_rate=1000,
+            blocksize=100,
+            energy_threshold=10,
+            minimum_voiced_seconds=0.05,
+            partial_confirmations=2,
+        ).start()
+
+        self.assertTrue(monitor.interrupt_event.wait(timeout=1.0))
+        self.assertEqual(monitor.stop().transcript, "stop")
+
+    def test_recent_expected_phrases_remain_available_across_boundaries(self):
+        monitor = BargeInMonitor(
+            audio_module=FakeAudio(),
+            recognizer_factory=lambda grammar: FakeRecognizer(),
+            matcher=BargeInMatcher(),
+            input_device=1,
+            capture_rate=1000,
+            recognition_rate=1000,
+            blocksize=100,
+            energy_threshold=10,
+        )
+
+        monitor.set_expected_speech("Captain, hold fast.")
+        monitor.set_expected_speech("The next phrase is playing now.")
+
+        self.assertIn("Captain, hold fast.", monitor._expected())
+        self.assertIn("The next phrase is playing now.", monitor._expected())
+        self.assertIsNone(
+            monitor.matcher.match("captain", expected_speech=monitor._expected())
+        )
 
 
 if __name__ == "__main__":
