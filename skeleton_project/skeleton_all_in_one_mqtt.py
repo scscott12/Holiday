@@ -7,7 +7,12 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 import numpy as np
 
-from holiday_skeleton.audio import SpeechGate, resample_linear_int16
+from holiday_skeleton.audio import (
+    SpeechGate,
+    output_stream_format,
+    resample_linear_int16,
+    select_input_device,
+)
 from holiday_skeleton.barge_in import (
     AnyStopEvent,
     BargeInAction,
@@ -130,7 +135,9 @@ PIPER_MODEL  = envs("PIPER_MODEL",f"{USER_HOME}/piper/en-gb-alan-low.onnx")
 PIPER_CONFIG = envs("PIPER_CONFIG","").strip() or None
 TTS_WAV      = envs("TTS_WAV", "/tmp/tts.wav")
 TTS_FRAME_MS = float(envs("TTS_FRAME_MS","20"))
+AUDIO_INPUT_DEVICE = envs("AUDIO_INPUT_DEVICE","").strip() or None
 AUDIO_OUTPUT_DEVICE = envs("AUDIO_OUTPUT_DEVICE","").strip() or None
+AUDIO_OUTPUT_SAMPLE_RATE = envs("AUDIO_OUTPUT_SAMPLE_RATE","").strip() or None
 TTS_CANNED_CACHE = envs("TTS_CANNED_CACHE","1").strip().lower() in ("1","true","yes","on")
 
 PCA_FREQ     = int(envs("PCA_FREQ","50"))
@@ -1482,8 +1489,7 @@ else:
 def pick_input_device():
     if sd is None: return None,"no-sounddevice"
     try:
-        for idx,d in enumerate(sd.query_devices()):
-            if d.get("max_input_channels",0)>0: return idx,d.get("name","mic")
+        return select_input_device(sd.query_devices(),AUDIO_INPUT_DEVICE)
     except Exception as e: print("[audio]",e)
     return None,"none"
 in_idx,in_name=pick_input_device()
@@ -2741,6 +2747,13 @@ def _configured_output_device():
     try: return int(AUDIO_OUTPUT_DEVICE)
     except ValueError: return AUDIO_OUTPUT_DEVICE
 
+def _configured_output_format(output_device):
+    return output_stream_format(
+        sd,
+        output_device=output_device,
+        requested_sample_rate=AUDIO_OUTPUT_SAMPLE_RATE,
+    )
+
 def _legacy_piper_available():
     return os.path.isfile(PIPER_BIN) and os.access(PIPER_BIN,os.X_OK) and os.path.isfile(PIPER_MODEL)
 
@@ -2761,6 +2774,8 @@ def _init_speech_engine():
         return
     started=time.monotonic()
     try:
+        output_device=_configured_output_device()
+        output_sample_rate,output_channels=_configured_output_format(output_device)
         _speech_engine=PiperSpeechEngine.load(
             model_path=PIPER_MODEL,
             config_path=PIPER_CONFIG,
@@ -2769,7 +2784,9 @@ def _init_speech_engine():
             volume_getter=_speech_volume,
             rest_fraction=JAW_REST_FRAC,
             maximum_fraction=JAW_MAX_FRAC,
-            output_device=_configured_output_device(),
+            output_device=output_device,
+            output_sample_rate=output_sample_rate,
+            output_channels=output_channels,
             frame_ms=TTS_FRAME_MS,
         )
         loaded_at=time.monotonic()
@@ -2802,7 +2819,8 @@ def _init_speech_engine():
             mqtt_pub("tts/cache_memory_kb","0.0",retain=True)
         print(
             f"[TTS] Piper voice warm and output stream ready in "
-            f"{time.monotonic() - started:.3f}s"
+            f"{time.monotonic() - started:.3f}s "
+            f"({output_sample_rate} Hz, {output_channels} ch)"
         )
     except Exception as e:
         _speech_engine=None

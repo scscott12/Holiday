@@ -52,7 +52,9 @@ pip install paho-mqtt
 - PIR: adjust hardware trimmer or MOTION_HOLD_SEC / MOTION_COOLDOWN_SEC envs.
 - Listening: tune SPEECH_START_TIMEOUT, END_SILENCE_SEC, MAX_UTTERANCE_SEC, and ENERGY_GATE.
 - Speech: Piper loads once at service startup and streams PCM directly to the output device.
+- AUDIO_INPUT_DEVICE may be a sounddevice index or unique name substring; set it when an output adapter also exposes an input.
 - AUDIO_OUTPUT_DEVICE may be a sounddevice index or unique name substring; blank uses the system default.
+- AUDIO_OUTPUT_SAMPLE_RATE may force a hardware rate; blank probes the output device's native rate and resamples Piper automatically.
 - TTS_FRAME_MS=20 controls both PCM write and jaw-envelope resolution.
 - TTS_CANNED_CACHE=1 pre-renders opening, goodbye, idle, and scene lines so canned speech avoids live synthesis.
 - Ollama streams in the background while Piper speaks completed phrases.

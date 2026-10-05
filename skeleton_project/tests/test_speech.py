@@ -95,7 +95,13 @@ class SpeechHelpersTests(unittest.TestCase):
 
 
 class PiperSpeechEngineTests(unittest.TestCase):
-    def make_engine(self, chunks, volume=1.0):
+    def make_engine(
+        self,
+        chunks,
+        volume=1.0,
+        output_sample_rate=None,
+        output_channels=1,
+    ):
         self.voice = FakeVoice(chunks)
         self.audio = FakeAudio()
         self.jaw = []
@@ -107,9 +113,51 @@ class PiperSpeechEngineTests(unittest.TestCase):
             volume_getter=lambda: self.volume[0],
             rest_fraction=0.25,
             maximum_fraction=1.0,
+            output_sample_rate=output_sample_rate,
+            output_channels=output_channels,
             frame_ms=10,
         )
         return engine
+
+    def test_resamples_piper_for_native_stereo_output(self):
+        engine = self.make_engine(
+            [FakeChunk(np.arange(20, dtype=np.int16) * 100)],
+            output_sample_rate=2000,
+            output_channels=2,
+        )
+
+        metrics = engine.speak("Resampled line")
+
+        self.assertEqual(engine.voice_sample_rate, 1000)
+        self.assertEqual(engine.sample_rate, 2000)
+        self.assertEqual(
+            (self.audio.created[0]["samplerate"], self.audio.created[0]["channels"]),
+            (2000, 2),
+        )
+        played = np.frombuffer(
+            b"".join(self.audio.stream.writes),
+            dtype=np.int16,
+        ).reshape(-1, 2)
+        np.testing.assert_array_equal(played[:, 0], played[:, 1])
+        self.assertGreater(played.shape[0], 20)
+        self.assertAlmostEqual(
+            metrics.audio_seconds,
+            played.shape[0] / 2000.0,
+        )
+
+    def test_pcm_cue_is_duplicated_for_stereo_output(self):
+        engine = self.make_engine([], output_channels=2)
+        pcm = np.arange(20, dtype=np.int16).tobytes()
+
+        metrics = engine.play_pcm16(pcm)
+
+        played = np.frombuffer(
+            b"".join(self.audio.stream.writes),
+            dtype=np.int16,
+        ).reshape(-1, 2)
+        np.testing.assert_array_equal(played[:, 0], np.arange(20, dtype=np.int16))
+        np.testing.assert_array_equal(played[:, 0], played[:, 1])
+        self.assertEqual(metrics.audio_seconds, 0.02)
 
     def test_reuses_voice_and_output_stream_across_utterances(self):
         engine = self.make_engine([FakeChunk(np.full(20, 1000))])

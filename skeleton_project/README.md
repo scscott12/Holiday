@@ -254,7 +254,9 @@ Environment="BARGE_IN_LISTEN_COMMANDS=wait"
 Environment="BARGE_IN_WAKE_WORDS=skeleton"
 Environment="BARGE_IN_ENERGY_GATE=320"
 Environment="BARGE_IN_REQUIRE_WAKE_WORD=0"
+Environment="AUDIO_INPUT_DEVICE="
 Environment="AUDIO_OUTPUT_DEVICE="
+Environment="AUDIO_OUTPUT_SAMPLE_RATE="
 Environment="TTS_FRAME_MS=20"
 Environment="TTS_CANNED_CACHE=1"
 Environment="LLM_PHRASE_MIN_CHARS=12"
@@ -276,7 +278,7 @@ The default 0.75-second endpoint silence is a good starting point for a responsi
 
 The service loads `PIPER_MODEL` once during startup, runs one silent inference to warm the ONNX path, and keeps a PortAudio output stream ready. Speech is sent directly from Piper to the speaker as signed 16-bit PCM, so the normal path no longer launches Piper for every line, writes `/tmp/tts.wav`, reopens it, or scans the whole WAV before playback.
 
-The jaw follows 20 ms RMS audio frames as those same frames are written to the speaker. Change `TTS_FRAME_MS` only if the servo needs slower movement; 15–25 ms is the useful range. `AUDIO_OUTPUT_DEVICE` may be a sounddevice device index or a unique device-name substring. Leave it empty to use the system default.
+The jaw follows 20 ms RMS audio frames as those same frames are written to the speaker. Change `TTS_FRAME_MS` only if the servo needs slower movement; 15–25 ms is the useful range. `AUDIO_INPUT_DEVICE` and `AUDIO_OUTPUT_DEVICE` may be sounddevice device indexes or unique device-name substrings. Set the input explicitly when a USB output adapter also exposes a headset-microphone input; an invalid or ambiguous explicit selection disables listening instead of silently choosing another device. Leave the output empty to use the system default. `AUDIO_OUTPUT_SAMPLE_RATE` may force a hardware rate, while a blank value probes the output device's native rate. Piper's mono PCM is resampled and duplicated when a stereo-only adapter requires it, while jaw timing continues to follow the actual frames sent to the device.
 
 With `TTS_CANNED_CACHE=1` (the default), every morning, afternoon, evening, night, goodbye, and idle-mutter line in the active personality plus every scene-speech line is synthesized silently during service startup. The raw PCM and jaw envelope stay in memory, so a motion greeting, goodbye, idle mutter, or scene line can write its first frame immediately without invoking Piper again. Dynamic Home Assistant text and Ollama phrases still use live streaming synthesis. A live personality switch pre-renders the incoming pack before activation and prunes lines used only by the previous pack, preventing repeated switches from growing RAM indefinitely. Cache keys normalize whitespace, and the cache belongs only to the currently loaded voice instance. Set `TTS_CANNED_CACHE=0` if startup time matters more than instant canned lines.
 

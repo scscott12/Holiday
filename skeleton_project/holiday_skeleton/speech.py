@@ -9,6 +9,8 @@ from typing import Any, Callable, Iterable, Optional, Sequence
 
 import numpy as np
 
+from .audio import resample_linear_int16
+
 
 @dataclass(frozen=True)
 class SpeechMetrics:
@@ -128,6 +130,8 @@ class PiperSpeechEngine:
         rest_fraction: float,
         maximum_fraction: float,
         output_device: Any = None,
+        output_sample_rate: Optional[int] = None,
+        output_channels: int = 1,
         frame_ms: float = 20.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -138,15 +142,23 @@ class PiperSpeechEngine:
         self.rest_fraction = float(rest_fraction)
         self.maximum_fraction = float(maximum_fraction)
         self.output_device = output_device
+        self.output_channels = int(output_channels)
         self.frame_ms = max(5.0, float(frame_ms))
         self.clock = clock
-        self.sample_rate = int(voice.config.sample_rate)
+        self.voice_sample_rate = int(voice.config.sample_rate)
+        self.sample_rate = int(output_sample_rate or self.voice_sample_rate)
+        if self.voice_sample_rate <= 0:
+            raise ValueError(f"invalid Piper sample rate: {self.voice_sample_rate}")
+        if self.sample_rate <= 0:
+            raise ValueError(f"invalid output sample rate: {self.sample_rate}")
+        if self.output_channels <= 0:
+            raise ValueError(f"invalid output channel count: {self.output_channels}")
         self._cache: dict[str, _CachedSpeech] = {}
         self._lock = threading.Lock()
         self._closed = False
         self._stream = audio_module.RawOutputStream(
             samplerate=self.sample_rate,
-            channels=1,
+            channels=self.output_channels,
             dtype="int16",
             device=output_device,
             blocksize=0,
@@ -165,6 +177,8 @@ class PiperSpeechEngine:
         maximum_fraction: float,
         config_path: Optional[str] = None,
         output_device: Any = None,
+        output_sample_rate: Optional[int] = None,
+        output_channels: int = 1,
         frame_ms: float = 20.0,
     ) -> "PiperSpeechEngine":
         """Load the ONNX voice once, then open the reusable output stream."""
@@ -180,6 +194,8 @@ class PiperSpeechEngine:
             rest_fraction=rest_fraction,
             maximum_fraction=maximum_fraction,
             output_device=output_device,
+            output_sample_rate=output_sample_rate,
+            output_channels=output_channels,
             frame_ms=frame_ms,
         )
 
@@ -201,33 +217,63 @@ class PiperSpeechEngine:
 
         return " ".join(str(text or "").split())
 
-    def _frames_from_chunk(self, chunk: Any) -> tuple[list[bytes], np.ndarray]:
+    def _output_pcm(self, samples: np.ndarray) -> bytes:
+        samples = np.asarray(samples, dtype=np.int16)
+        if self.output_channels == 1:
+            return samples.tobytes()
+        return np.repeat(
+            samples[:, np.newaxis],
+            self.output_channels,
+            axis=1,
+        ).reshape(-1).tobytes()
+
+    def _frames_from_chunk(
+        self,
+        chunk: Any,
+        resample_state: Optional[dict] = None,
+    ) -> tuple[list[bytes], np.ndarray]:
         if int(chunk.sample_width) != 2:
             raise ValueError(f"unsupported Piper sample width: {chunk.sample_width}")
         if int(chunk.sample_channels) != 1:
             raise ValueError(f"unsupported Piper channel count: {chunk.sample_channels}")
-        if int(chunk.sample_rate) != self.sample_rate:
+        if int(chunk.sample_rate) != self.voice_sample_rate:
             raise ValueError(
-                f"Piper sample rate changed from {self.sample_rate} to {chunk.sample_rate}"
+                "Piper sample rate changed from "
+                f"{self.voice_sample_rate} to {chunk.sample_rate}"
             )
 
+        samples = np.frombuffer(chunk.audio_int16_bytes, dtype=np.int16)
+        if self.voice_sample_rate != self.sample_rate:
+            samples = resample_linear_int16(
+                samples,
+                self.voice_sample_rate,
+                self.sample_rate,
+                resample_state if resample_state is not None else {},
+            )
         frames = split_pcm16_frames(
-            chunk.audio_int16_bytes,
+            self._output_pcm(samples),
             sample_rate=self.sample_rate,
-            channels=1,
+            channels=self.output_channels,
             frame_ms=self.frame_ms,
         )
-        return frames, jaw_envelope(frames)
+        return frames, jaw_envelope(frames, channels=self.output_channels)
 
     def _render_for_cache(self, text: str) -> _CachedSpeech:
         frames: list[bytes] = []
         levels: list[float] = []
         samples = 0
+        resample_state: dict = {}
         for chunk in self.voice.synthesize(text):
-            chunk_frames, chunk_levels = self._frames_from_chunk(chunk)
+            chunk_frames, chunk_levels = self._frames_from_chunk(
+                chunk,
+                resample_state,
+            )
             frames.extend(chunk_frames)
             levels.extend(float(level) for level in chunk_levels)
-            samples += sum(len(frame) // 2 for frame in chunk_frames)
+            samples += sum(
+                len(frame) // (2 * self.output_channels)
+                for frame in chunk_frames
+            )
         if not frames:
             raise ValueError("Piper produced no PCM audio")
         return _CachedSpeech(tuple(frames), tuple(levels), samples)
@@ -396,8 +442,9 @@ class PiperSpeechEngine:
                             (cached.frames, cached.levels),
                         )
                     else:
+                        resample_state: dict = {}
                         rendered_chunks = (
-                            self._frames_from_chunk(chunk)
+                            self._frames_from_chunk(chunk, resample_state)
                             for chunk in self.voice.synthesize(text)
                         )
 
@@ -413,7 +460,9 @@ class PiperSpeechEngine:
                             self.jaw_set(jaw_fraction)
                             self._stream.write(scale_pcm16(frame, self.volume_getter()))
                             frames_written += 1
-                            samples_written += len(frame) // 2
+                            samples_written += len(frame) // (
+                                2 * self.output_channels
+                            )
 
                             if not phrase_audio_started:
                                 phrase_audio_started = True
@@ -459,15 +508,16 @@ class PiperSpeechEngine:
     ) -> SpeechMetrics:
         """Play a preloaded mono PCM cue through the persistent output stream."""
 
+        mono_samples = np.frombuffer(pcm, dtype=np.int16)
         frames = split_pcm16_frames(
-            pcm,
+            self._output_pcm(mono_samples),
             sample_rate=self.sample_rate,
-            channels=1,
+            channels=self.output_channels,
             frame_ms=self.frame_ms,
         )
         levels: Sequence[float]
         if animate_jaw:
-            levels = jaw_envelope(frames)
+            levels = jaw_envelope(frames, channels=self.output_channels)
         else:
             levels = (0.0,) * len(frames)
 
@@ -496,7 +546,7 @@ class PiperSpeechEngine:
                         )
                     )
                     frames_written += 1
-                    samples_written += len(frame) // 2
+                    samples_written += len(frame) // (2 * self.output_channels)
                     if frames_written == 1:
                         first_audio_seconds = self.clock() - started_at
                         if first_audio is not None:
