@@ -9,6 +9,95 @@ from typing import Deque, Optional
 import numpy as np
 
 
+def select_input_device(devices, configured_device=None):
+    """Return one input-capable device index and name.
+
+    A configured value may be a numeric index, an exact device name, or a
+    unique case-insensitive name substring.  An invalid or ambiguous explicit
+    selection fails closed instead of silently listening to a headset adapter
+    or another unintended input.
+    """
+
+    devices = list(devices)
+    available = [
+        (index, str(device.get("name", "mic")))
+        for index, device in enumerate(devices)
+        if int(device.get("max_input_channels", 0)) > 0
+    ]
+    if configured_device is None or str(configured_device).strip() == "":
+        return available[0] if available else (None, "none")
+
+    configured = str(configured_device).strip()
+    try:
+        index = int(configured)
+    except ValueError:
+        index = None
+
+    if index is not None:
+        if index < 0 or index >= len(devices):
+            raise ValueError(f"input device index is out of range: {index}")
+        device = devices[index]
+        if int(device.get("max_input_channels", 0)) <= 0:
+            raise ValueError(f"configured device has no input channels: {index}")
+        return index, str(device.get("name", "mic"))
+
+    needle = configured.casefold()
+    exact = [item for item in available if item[1].casefold() == needle]
+    matches = exact or [item for item in available if needle in item[1].casefold()]
+    if not matches:
+        raise ValueError(f"configured input device was not found: {configured!r}")
+    if len(matches) > 1:
+        names = ", ".join(name for _, name in matches)
+        raise ValueError(
+            f"configured input device is ambiguous: {configured!r} ({names})"
+        )
+    return matches[0]
+
+
+def output_stream_format(
+    audio_module,
+    output_device=None,
+    requested_sample_rate=None,
+):
+    """Choose a native int16 output rate and the smallest supported channel count."""
+
+    device = audio_module.query_devices(output_device, "output")
+    maximum_channels = int(device.get("max_output_channels", 0))
+    if maximum_channels <= 0:
+        raise ValueError("configured output device has no output channels")
+
+    if requested_sample_rate in (None, ""):
+        sample_rate = int(round(float(device.get("default_samplerate", 0))))
+    else:
+        try:
+            sample_rate = int(requested_sample_rate)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"output sample rate must be an integer: {requested_sample_rate!r}"
+            ) from error
+    if sample_rate <= 0:
+        raise ValueError(f"invalid output sample rate: {sample_rate}")
+
+    last_error = None
+    for channels in range(1, maximum_channels + 1):
+        try:
+            audio_module.check_output_settings(
+                device=output_device,
+                channels=channels,
+                dtype="int16",
+                samplerate=sample_rate,
+            )
+        except Exception as error:  # PortAudio uses backend-specific exceptions.
+            last_error = error
+            continue
+        return sample_rate, channels
+
+    detail = f": {last_error}" if last_error is not None else ""
+    raise ValueError(
+        f"output device does not support {sample_rate} Hz int16 PCM{detail}"
+    )
+
+
 def resample_linear_int16(
     samples: np.ndarray,
     source_rate: int,
