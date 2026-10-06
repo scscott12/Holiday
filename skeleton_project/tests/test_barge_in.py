@@ -130,14 +130,23 @@ class FakeVerificationRecognizer(FakeRecognizer):
         return json.dumps({"partial": self.transcript})
 
 
+class FakeDelayedVerificationRecognizer(FakeRecognizer):
+    def __init__(self, transcripts):
+        self.transcripts = iter(transcripts)
+
+    def PartialResult(self):
+        return json.dumps({"partial": next(self.transcripts, "")})
+
+
 class FakeInputStream:
-    def __init__(self, callback):
+    def __init__(self, callback, block_count=2):
         self.callback = callback
+        self.block_count = block_count
 
     def __enter__(self):
         voiced = np.full(100, 1000, dtype=np.int16).tobytes()
-        self.callback(voiced, 100, None, None)
-        self.callback(voiced, 100, None, None)
+        for _ in range(self.block_count):
+            self.callback(voiced, 100, None, None)
         return self
 
     def __exit__(self, exc_type, exc, traceback):
@@ -145,8 +154,11 @@ class FakeInputStream:
 
 
 class FakeAudio:
+    def __init__(self, block_count=2):
+        self.block_count = block_count
+
     def RawInputStream(self, **kwargs):
-        return FakeInputStream(kwargs["callback"])
+        return FakeInputStream(kwargs["callback"], self.block_count)
 
 
 class BargeInMonitorTests(unittest.TestCase):
@@ -215,6 +227,50 @@ class BargeInMonitorTests(unittest.TestCase):
 
         self.assertTrue(monitor.interrupt_event.wait(timeout=1.0))
         self.assertEqual(monitor.stop().transcript, "stop")
+
+    def test_full_vocabulary_verifier_may_trail_command_decoder(self):
+        monitor = BargeInMonitor(
+            audio_module=FakeAudio(block_count=3),
+            recognizer_factory=lambda grammar: FakeRecognizer(),
+            verification_recognizer_factory=lambda: FakeDelayedVerificationRecognizer(
+                ("", "", "stop")
+            ),
+            matcher=BargeInMatcher(),
+            input_device=1,
+            capture_rate=1000,
+            recognition_rate=1000,
+            blocksize=100,
+            energy_threshold=10,
+            minimum_voiced_seconds=0.05,
+            partial_confirmations=2,
+        ).start()
+
+        self.assertTrue(monitor.interrupt_event.wait(timeout=1.0))
+        self.assertEqual(monitor.stop().transcript, "stop")
+
+    def test_full_vocabulary_verifier_accepts_wait_homophone(self):
+        class WaitRecognizer(FakeRecognizer):
+            def PartialResult(self):
+                return json.dumps({"partial": "wait"})
+
+        monitor = BargeInMonitor(
+            audio_module=FakeAudio(),
+            recognizer_factory=lambda grammar: WaitRecognizer(),
+            verification_recognizer_factory=lambda: FakeVerificationRecognizer(
+                "weight"
+            ),
+            matcher=BargeInMatcher(),
+            input_device=1,
+            capture_rate=1000,
+            recognition_rate=1000,
+            blocksize=100,
+            energy_threshold=10,
+            minimum_voiced_seconds=0.05,
+            partial_confirmations=2,
+        ).start()
+
+        self.assertTrue(monitor.interrupt_event.wait(timeout=1.0))
+        self.assertEqual(monitor.stop().transcript, "wait")
 
     def test_recent_expected_phrases_remain_available_across_boundaries(self):
         monitor = BargeInMonitor(
