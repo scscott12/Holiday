@@ -46,6 +46,36 @@ def _contains_phrase(text: Any, phrase: Any) -> bool:
     )
 
 
+_CORROBORATION_IGNORED_WORDS = frozenset(("please", "hey", "okay", "ok"))
+_CORROBORATION_ALIASES = {
+    "quiet": frozenset(("quiet", "quite")),
+    "wait": frozenset(("wait", "weight")),
+}
+
+
+def _corroborates_command(text: Any, command: Any) -> bool:
+    """Return whether unrestricted speech supports a constrained command.
+
+    The unrestricted Vosk decoder commonly trails the command grammar by a
+    few PCM blocks and may spell short commands as homophones.  Polite/wake
+    filler does not need independent confirmation, while every meaningful
+    command word does.
+    """
+
+    heard = set(_normalize(text).split())
+    required = [
+        word
+        for word in _normalize(command).split()
+        if word not in _CORROBORATION_IGNORED_WORDS
+    ]
+    if not heard or not required:
+        return False
+    return all(
+        bool(heard & _CORROBORATION_ALIASES.get(word, frozenset((word,))))
+        for word in required
+    )
+
+
 class BargeInMatcher:
     """Match only explicit commands and reject likely playback echo."""
 
@@ -186,6 +216,7 @@ class BargeInMonitor:
         end_silence_seconds: float = 0.30,
         partial_confirmations: int = 2,
         parent_stop_event: Optional[threading.Event] = None,
+        corroboration_seconds: float = 1.25,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.audio_module = audio_module
@@ -202,6 +233,7 @@ class BargeInMonitor:
         self.end_silence_seconds = float(end_silence_seconds)
         self.partial_confirmations = int(partial_confirmations)
         self.parent_stop_event = parent_stop_event
+        self.corroboration_seconds = max(0.10, float(corroboration_seconds))
         self.clock = clock
 
         self.interrupt_event = threading.Event()
@@ -270,6 +302,9 @@ class BargeInMonitor:
             partial_confirmations=self.partial_confirmations,
             clock=self.clock,
         )
+        verification_history: deque[tuple[float, str]] = deque()
+        pending_match: Optional[BargeInMatch] = None
+        pending_deadline = 0.0
 
         def callback(indata: Any, frames: int, time_info: Any, status: Any) -> None:
             try:
@@ -306,6 +341,14 @@ class BargeInMonitor:
                         resample_state,
                     )
                     now = self.clock()
+                    if pending_match is not None and now > pending_deadline:
+                        detector = BargeInDetector(
+                            self.matcher,
+                            partial_confirmations=self.partial_confirmations,
+                            clock=self.clock,
+                        )
+                        pending_match = None
+                        verification_history.clear()
                     gated = gate.process(resampled, now)
                     if not gated.audio.size:
                         continue
@@ -336,17 +379,34 @@ class BargeInMonitor:
                                 verification_recognizer.PartialResult(),
                                 "partial",
                             )
-                        if not _contains_phrase(verification_text, transcript):
-                            detector.inspect("", expected_speech=self._expected())
-                            continue
+                        if verification_text:
+                            verification_history.append((now, verification_text))
+                        while (
+                            verification_history
+                            and now - verification_history[0][0]
+                            > self.corroboration_seconds
+                        ):
+                            verification_history.popleft()
 
                     match = detector.inspect(
                         transcript,
                         expected_speech=self._expected(),
                         final=final,
                     )
-                    if match is not None:
-                        self._latch(match)
+                    if match is not None and pending_match is None:
+                        pending_match = match
+                        pending_deadline = now + self.corroboration_seconds
+
+                    if pending_match is None:
+                        continue
+                    if verification_recognizer is not None and not any(
+                        _corroborates_command(text, pending_match.transcript)
+                        for _, text in verification_history
+                    ):
+                        continue
+
+                    self._latch(pending_match)
+                    if self.interrupt_event.is_set():
                         break
         except Exception as error:
             self.error = str(error)
