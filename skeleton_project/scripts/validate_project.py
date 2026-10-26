@@ -112,9 +112,9 @@ def validate_project(root: Path = PROJECT_ROOT) -> dict[str, Any]:
     }
 
 
-def main() -> int:
+def main(root: Path = PROJECT_ROOT) -> int:
     try:
-        summary = validate_project()
+        summary = validate_project(root)
     except (ContentReloadError, ProjectValidationError) as error:
         print(f"Project validation failed: {error}", file=sys.stderr)
         return 1
