@@ -110,6 +110,51 @@ class SpeechGateTests(unittest.TestCase):
         self.assertFalse(gate.silence_complete(1.59))
         self.assertTrue(gate.silence_complete(1.6))
 
+    def test_reset_after_interrupted_speech_restores_idle_gate(self):
+        gate = self.make_gate()
+        voice = np.full(10, 100, dtype=np.int16)
+        quiet = np.zeros(10, dtype=np.int16)
+
+        gate.process(voice, 0.0)
+        self.assertTrue(gate.process(voice, 0.1).speech_started)
+        self.assertTrue(gate.speaking)
+
+        gate.reset()
+
+        self.assertFalse(gate.speaking)
+        self.assertFalse(gate.silence_complete(100.0))
+        # Quiet audio is held back again rather than passed through.
+        self.assertEqual(gate.process(quiet, 5.0).audio.size, 0)
+
+    def test_reset_discards_stale_preroll_and_voiced_progress(self):
+        gate = self.make_gate()
+        old = np.full(10, 50, dtype=np.int16)
+        voice = np.full(10, 100, dtype=np.int16)
+
+        gate.process(old, 0.0)  # voiced 0.1s of the 0.2s required
+        gate.reset()
+
+        self.assertEqual(gate.process(voice, 1.0).audio.size, 0)
+        started = gate.process(voice, 1.1)
+        self.assertTrue(started.speech_started)
+        np.testing.assert_array_equal(
+            started.audio, np.concatenate((voice, voice))
+        )
+
+    def test_gate_can_restart_after_reset_and_endpoint_again(self):
+        gate = self.make_gate()
+        voice = np.full(10, 100, dtype=np.int16)
+
+        gate.process(voice, 0.0)
+        gate.process(voice, 0.1)
+        self.assertTrue(gate.silence_complete(0.6))
+        gate.reset()
+        gate.process(voice, 2.0)
+        self.assertTrue(gate.process(voice, 2.1).speech_started)
+
+        self.assertFalse(gate.silence_complete(2.5))
+        self.assertTrue(gate.silence_complete(2.6))
+
 
 if __name__ == "__main__":
     unittest.main()

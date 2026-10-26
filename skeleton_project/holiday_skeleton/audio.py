@@ -197,6 +197,14 @@ class SpeechGate:
             self._last_voice_at = now
         return GateResult(samples)
 
+    def reset(self) -> None:
+        """Return to the idle state so the next speech gets fresh preroll."""
+
+        self._preroll.clear()
+        self._voiced_seconds = 0.0
+        self._last_voice_at = None
+        self.speaking = False
+
     def silence_complete(self, now: float) -> bool:
         return bool(
             self.speaking
