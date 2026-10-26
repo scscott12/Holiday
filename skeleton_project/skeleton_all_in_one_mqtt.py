@@ -154,8 +154,8 @@ EYES_SPEAK_FRAC  = float(envs("EYES_SPEAK_FRAC","1.0"))
 EYES_INVERT      = int(envs("EYES_INVERT","0"))
 
 PIR_PIN          = int(envs("PIR_PIN","17"))
-MOTION_HOLD_SEC  = float(envs("MOTION_HOLD_SEC","0.8"))
-MOTION_COOLDOWN_SEC = float(envs("MOTION_COOLDOWN_SEC","8.0"))
+MOTION_HOLD_SEC  = float(envs("MOTION_HOLD_SEC","1.5"))
+MOTION_COOLDOWN_SEC = float(envs("MOTION_COOLDOWN_SEC","30.0"))
 
 IDLE_LIFE_ENABLED = envs("IDLE_LIFE_ENABLED","1").strip().lower() in ("1","true","yes","on")
 IDLE_LIFE_MIN_SEC = float(envs("IDLE_LIFE_MIN_SEC","18.0"))
@@ -394,12 +394,19 @@ _maintenance_last_error="none"
 _maintenance_since="never"
 _maintenance_rejected_count=0
 
+_last_lines={}
+def _pick_fresh(kind,lines):
+    """Random line that differs from the previous one of the same kind when possible."""
+    choices=[l for l in lines if l!=_last_lines.get(kind)] or list(lines)
+    line=random.choice(choices); _last_lines[kind]=line
+    return line
+
 def pick_opening_line()->str:
     hr=datetime.now().hour
-    if 5<=hr<12: return random.choice(MORNING_LINES)
-    if 12<=hr<17: return random.choice(AFTERNOON_LINES)
-    if 17<=hr<21: return random.choice(EVENING_LINES)
-    return random.choice(NIGHT_LINES)
+    if 5<=hr<12: return _pick_fresh("opening",MORNING_LINES)
+    if 12<=hr<17: return _pick_fresh("opening",AFTERNOON_LINES)
+    if 17<=hr<21: return _pick_fresh("opening",EVENING_LINES)
+    return _pick_fresh("opening",NIGHT_LINES)
 
 def _try_load_prompts():
     global SYSTEM_PROMPT,MORNING_LINES,AFTERNOON_LINES,EVENING_LINES,NIGHT_LINES,GOODBYE_LINES,IDLE_LINES
@@ -2340,13 +2347,25 @@ def _transcript_pretty():
             lines.append(f'**{who}**: "{txt}"')
         return "\n".join(lines)
     except Exception: return ""
+def _transcript_has_interaction():
+    """True once a visitor spoke or gave a command; greetings alone do not count."""
+    try:
+        return any(u.get("role") in ("user","command") for u in (_transcript or {}).get("utterances") or [])
+    except Exception: return False
+
+HA_STATE_MAX=255
 def _transcript_publish_and_clear():
     global _transcript
     try:
-        if _transcript:
+        if _transcript and _transcript_has_interaction():
             _transcript["endts"]=time.time()
             pretty=_transcript_pretty()
-            if pretty: mqtt_pub("transcript",pretty)
+            if pretty:
+                # Home Assistant rejects sensor states over 255 chars, so the
+                # state is a shortened copy and the full text rides as an attribute.
+                short=pretty if len(pretty)<=HA_STATE_MAX else pretty[:HA_STATE_MAX-1]+"…"
+                mqtt_pub("transcript/attributes",json.dumps({"full_text":pretty}))
+                mqtt_pub("transcript",short)
     except Exception as e: print("[transcript]",e)
     _transcript=None
 
@@ -3707,7 +3726,7 @@ def _runtime_state_changed(state):
 
 def _say_goodbye():
     if _maintenance_stop_requested(): return None
-    gb=random.choice(GOODBYE_LINES) if GOODBYE_LINES else "Goodbye."
+    gb=_pick_fresh("goodbye",GOODBYE_LINES) if GOODBYE_LINES else "Goodbye."
     _transcript_add("assistant",gb)
     controller.set_state(RuntimeState.SPEAKING)
     return speak_with_jaw(gb)
@@ -3741,10 +3760,22 @@ def _conversation_loop(memory):
         if _barge_in_ends_visit(barge_result): return
 
 _last_talk=0.0
+_empty_visits=0
+EMPTY_VISIT_BACKOFF_MAX_SEC=float(envs("EMPTY_VISIT_BACKOFF_MAX_SEC","300"))
+
+def _effective_cooldown():
+    """Cooldown doubles after each visit nobody answered (a false trigger), up to a cap."""
+    return min(MOTION_COOLDOWN_SEC*(2**min(_empty_visits,6)),max(MOTION_COOLDOWN_SEC,EMPTY_VISIT_BACKOFF_MAX_SEC))
+
+def _note_visit_result(had_interaction):
+    global _empty_visits
+    _empty_visits=0 if had_interaction else _empty_visits+1
+    mqtt_pub("visit/empty_streak",str(_empty_visits))
+
 def _manual_trigger():
     global _last_talk
     now=time.monotonic()
-    if (now-_last_talk)<MOTION_COOLDOWN_SEC:
+    if (now-_last_talk)<_effective_cooldown():
         controller.set_state(RuntimeState.COOLDOWN)
         return
     _transcript_start()
@@ -3773,6 +3804,7 @@ def _manual_trigger():
         if memory is not None: memory.clear()
         _publish_memory_turns(None)
         _last_talk=time.monotonic()
+        _note_visit_result(_transcript_has_interaction())
         _transcript_publish_and_clear()
         if not controller.stop_event.is_set() and not _maintenance_stop_requested():
             controller.set_state(RuntimeState.COOLDOWN)
