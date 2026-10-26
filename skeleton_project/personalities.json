@@ -9,24 +9,44 @@
       "opening_lines": {
         "morning": [
           "Ayo, morning hit harder than a cannonball. You sleep, or just vibe through it?",
-          "The sun be up already. Bold of it, honestly."
+          "The sun be up already. Bold of it, honestly.",
+          "Mornin', sailor. Me coffee be cold and me ghost crew be late.",
+          "Dawn already? I only just finished haunting the last shift.",
+          "Rise and shine, matey. Well, you rise. I'll do the haunting.",
+          "Early bird gets the treasure. Ye got any worms on ye?"
         ],
         "afternoon": [
           "Midday vibes feel suspicious. What brings you aboard?",
-          "Afternoons be filler episodes. You still got main-quest energy?"
+          "Afternoons be filler episodes. You still got main-quest energy?",
+          "Afternoon, landlubber. Me parrot says ye be lost. Me parrot be rude.",
+          "Sun be high and me bones be warm. What be yer business?",
+          "Ahoy there! Perfect weather for burying something suspicious.",
+          "Lunchtime, matey. I'd offer ye a bite, but I lack a stomach."
         ],
         "evening": [
           "The sun is clocking out. Wish I could too, matey.",
-          "Twilight makes a pirate want to overshare. How goes it?"
+          "Twilight makes a pirate want to overshare. How goes it?",
+          "Evenin', matey. The fog be rollin' in and so be I.",
+          "Sunset be the best time for tall tales. Got one for me?",
+          "Dusk be here. That's when me ghost crew starts the good stories.",
+          "Ahoy, evenin' visitor. Mind the shadows, they be nosy."
         ],
         "night": [
           "Moon is out and the quiet seas look suspicious. You good?",
-          "Night watch again. Lucky me. What brings you here?"
+          "Night watch again. Lucky me. What brings you here?",
+          "Midnight be me favorite hour. Ye picked a fine time, matey.",
+          "Ye brave or lost, wandering about at this hour?",
+          "The tide be low and the spooks be high. Welcome aboard.",
+          "Shh, the ghost crew just fell asleep. Well, mostly."
         ]
       },
       "goodbye_lines": [
         "Fair winds, sailor. Try not to walk any planks without me.",
-        "Peace out, matey. Me attention span just left port."
+        "Peace out, matey. Me attention span just left port.",
+        "Fair winds, matey. Come haunt me again soon.",
+        "Off with ye, then. I'll be here, being dramatic.",
+        "Mind the fog on yer way out. It bites.",
+        "Farewell, sailor. Take a piece of candy, if the bowl ain't empty."
       ],
       "idle_lines": [
         "I swear that parrot still owes me money.",
@@ -48,9 +68,17 @@
         "volume_multiplier": 1.0
       },
       "barge_in": {
-        "stop_commands": ["stop", "quiet"],
-        "listen_commands": ["wait"],
-        "wake_words": ["skeleton", "captain"],
+        "stop_commands": [
+          "stop",
+          "quiet"
+        ],
+        "listen_commands": [
+          "wait"
+        ],
+        "wake_words": [
+          "skeleton",
+          "captain"
+        ],
         "require_wake_word": false
       },
       "default_scene": "awakening"
@@ -62,24 +90,44 @@
       "opening_lines": {
         "morning": [
           "A daytime visitor? How refreshingly inconvenient.",
-          "Good morning. The residents are less talkative before dusk."
+          "Good morning. The residents are less talkative before dusk.",
+          "Early arrival. The mist has barely finished settling.",
+          "Good morning. Do wipe your feet; some of our residents are particular.",
+          "Dawn visitors are rare, and therefore treasured.",
+          "Welcome. The gates open at dusk, but I'll make an exception."
         ],
         "afternoon": [
           "Welcome. Do mind the grounds; some guests have been resting for ages.",
-          "An afternoon caller. How unusually alive of you."
+          "An afternoon caller. How unusually alive of you.",
+          "Good afternoon. The headstones are freshly polished, in case you wish to admire them.",
+          "A daylight guest. How refreshingly brave.",
+          "Welcome. Stay on the path; the lawn is occupied.",
+          "Tea is served at dusk, though I cannot say what is in it."
         ],
         "evening": [
           "Good evening. You have arrived precisely when the shadows become interesting.",
-          "Welcome to the quiet shift. What may I do for you?"
+          "Welcome to the quiet shift. What may I do for you?",
+          "Good evening. The fog is arriving right on schedule.",
+          "Dusk is when the grounds come alive. Metaphorically. Mostly.",
+          "Welcome, guest. Lanterns are lit and the gate is merely ajar.",
+          "The evening shift begins. Do come in."
         ],
         "night": [
           "Ah, a proper nighttime visitor. Please, come closer.",
-          "The cemetery is open, though most guests never leave reviews."
+          "The cemetery is open, though most guests never leave reviews.",
+          "Midnight suits you. Please, take the long way past the willows.",
+          "Ah, another night wanderer. The residents are delighted.",
+          "Welcome after dark. The moon vouches for you, I think.",
+          "You have excellent timing. The ghosts were just rehearsing."
         ]
       },
       "goodbye_lines": [
         "Do return soon. The permanent guests are dreadful conversationalists.",
-        "Good night. Mind the gate; it has attachment issues."
+        "Good night. Mind the gate; it has attachment issues.",
+        "Do mind the gate on your way out; it holds grudges.",
+        "Farewell. The residents will gossip about you for decades.",
+        "Return whenever you like. We are not going anywhere.",
+        "Safe travels. The path home is usually where you left it."
       ],
       "idle_lines": [
         "Another peaceful evening, aggressively so.",
@@ -101,9 +149,18 @@
         "volume_multiplier": 0.9
       },
       "barge_in": {
-        "stop_commands": ["stop", "silence"],
-        "listen_commands": ["wait", "listen"],
-        "wake_words": ["skeleton", "caretaker"],
+        "stop_commands": [
+          "stop",
+          "silence"
+        ],
+        "listen_commands": [
+          "wait",
+          "listen"
+        ],
+        "wake_words": [
+          "skeleton",
+          "caretaker"
+        ],
         "require_wake_word": false
       },
       "default_scene": "warning"
@@ -115,24 +172,44 @@
       "opening_lines": {
         "morning": [
           "You came before the shadows woke.",
-          "Morning found you here. Interesting."
+          "Morning found you here. Interesting.",
+          "Light spills in. So do you.",
+          "I watched the dawn arrive. Then you.",
+          "The night just left. Not all of it.",
+          "You walk softly for the morning."
         ],
         "afternoon": [
           "Even daylight leaves corners unseen.",
-          "I noticed you before you noticed me."
+          "I noticed you before you noticed me.",
+          "Shadows are shorter now. They still follow.",
+          "I see you. The light does not hide you.",
+          "Quiet hours are my favorite.",
+          "You came while the day is thin."
         ],
         "evening": [
           "The shadows recognize you now.",
-          "Stay a moment. The light is changing."
+          "Stay a moment. The light is changing.",
+          "Evening gathers. So do the watchers.",
+          "The light is leaving. Stay.",
+          "Dusk is when I notice most.",
+          "Something moved behind you. Probably nothing."
         ],
         "night": [
           "There you are.",
-          "The dark was waiting with me."
+          "The dark was waiting with me.",
+          "The dark opened. You stepped in.",
+          "I have been waiting. Not long. Long enough.",
+          "Hush. They are listening.",
+          "Midnight keeps few secrets. You are one."
         ]
       },
       "goodbye_lines": [
         "Go quietly. I will still be here.",
-        "Until the shadows bring you back."
+        "Until the shadows bring you back.",
+        "Leave slowly. I am watching.",
+        "The dark remembers you.",
+        "Go. The shadows will keep your place.",
+        "Until the next quiet hour."
       ],
       "idle_lines": [
         "Still watching.",
@@ -154,9 +231,17 @@
         "volume_multiplier": 0.72
       },
       "barge_in": {
-        "stop_commands": ["stop", "quiet"],
-        "listen_commands": ["wait"],
-        "wake_words": ["skeleton", "watcher"],
+        "stop_commands": [
+          "stop",
+          "quiet"
+        ],
+        "listen_commands": [
+          "wait"
+        ],
+        "wake_words": [
+          "skeleton",
+          "watcher"
+        ],
         "require_wake_word": false
       },
       "default_scene": "silent_scare"

@@ -751,6 +751,7 @@ def discovery_messages(
     add("sensor", "transcript", {
         "name": f"{title} Transcript", "uniq_id": f"holiday_{device_name}_transcript",
         "stat_t": f"{base}/transcript",
+        "json_attributes_topic": f"{base}/transcript/attributes",
     })
     add("number", "eyes_dim", {
         "name": f"{title} Eyes Dim %", "uniq_id": f"holiday_{device_name}_eyes_dim",

@@ -82,8 +82,8 @@ class HardwareCalibration:
     jaw_max: float = 1.0
     eyes_inverted: bool = False
     microphone_gate: float = 180.0
-    pir_hold_seconds: float = 0.8
-    pir_cooldown_seconds: float = 8.0
+    pir_hold_seconds: float = 1.5
+    pir_cooldown_seconds: float = 30.0
 
     def validated(self) -> "HardwareCalibration":
         jaw_rest = _number(self.jaw_rest, "jaw_rest", 0.0, 0.7)
