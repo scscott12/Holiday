@@ -349,6 +349,8 @@ class BargeInMonitor:
                         )
                         pending_match = None
                         verification_history.clear()
+                    if gate.silence_complete(now):
+                        gate.reset()
                     gated = gate.process(resampled, now)
                     if not gated.audio.size:
                         continue
