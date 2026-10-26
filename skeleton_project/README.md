@@ -527,9 +527,9 @@ The packaged service uses `Type=notify` and does not become ready until Piper, t
 
 Home Assistant exposes whether systemd enabled the watchdog, its state, controller-heartbeat age, last successful feed, feed count, and last error. Running the Python script manually has no `NOTIFY_SOCKET` or `WATCHDOG_USEC`, so watchdog state is neutrally `disabled` and all skeleton features continue to work.
 
-## Checks
+## Development
 
-Every pull request that changes the skeleton project runs the same hardware-free checks in GitHub Actions. Run the complete gate locally from `skeleton_project/`:
+Every pull request that changes the skeleton project runs the same hardware-free checks in GitHub Actions (`.github/workflows/skeleton-ci.yml`). Run the complete gate locally from `skeleton_project/`:
 
 ```bash
 python3 -m pip install -r requirements-ci.txt
@@ -537,6 +537,18 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q holiday_skeleton scripts tests skeleton_all_in_one_mqtt.py
 python3 -c "import skeleton_all_in_one_mqtt"
 python3 scripts/validate_project.py
+```
+
+`requirements-ci.txt` installs only `numpy` and `PyYAML`. CI runs the tests with the standard-library `unittest` runner, so no extra packages are needed.
+
+[pytest](https://docs.pytest.org/) is an optional local alternative that CI does not use. Install it separately (`python3 -m pip install pytest`), then run it from either directory:
+
+```bash
+# from skeleton_project/
+python3 -m pytest tests
+
+# from the repository root (tests import holiday_skeleton, so skeleton_project must be on PYTHONPATH)
+PYTHONPATH=skeleton_project python3 -m pytest skeleton_project/tests
 ```
 
 The validator loads the packaged personality and scene libraries with production bounds, verifies their cross-references and any WAV cues, parses every Home Assistant YAML file, and requires every MQTT discovery topic and `uniq_id` to be unique with a strict JSON payload. It does not require GPIO, audio hardware, Piper, Ollama, Home Assistant, or an MQTT broker.
