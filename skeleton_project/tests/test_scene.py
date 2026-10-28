@@ -4,9 +4,11 @@ import threading
 import unittest
 import wave
 from pathlib import Path
+from unittest.mock import Mock
 
 import numpy as np
 
+from holiday_skeleton.controller import EventKind, SkeletonController
 from holiday_skeleton.scene import (
     SceneAction,
     SceneConfigError,
@@ -128,6 +130,159 @@ class SceneLibraryTests(unittest.TestCase):
 
 
 class SceneRunnerTests(unittest.TestCase):
+    def test_scene_name_input_selects_requested_actions(self):
+        library = SceneLibrary.from_data({"scenes": {
+            "greeting": {"steps": [{"action": "speak", "text": "Hello."}]},
+            "scare": {"steps": [{"action": "eyes", "level": 1.0}]},
+        }})
+        for name, action, parameters in (
+            (" GREETING ", SceneAction.SPEAK, {"text": "Hello."}),
+            ("ScArE", SceneAction.EYES, {"level": 1.0, "duration": 0.0}),
+        ):
+            with self.subTest(name=name):
+                executor = Mock(return_value=False)
+                result = SceneRunner(executor).run(library.get(name), threading.Event())
+
+                executor.assert_called_once()
+                step, stop = executor.call_args.args
+                self.assertEqual(step.action, action)
+                self.assertEqual(step.parameters, parameters)
+                self.assertFalse(stop.is_set())
+                self.assertEqual(result.scene_name, name.strip().lower())
+                self.assertEqual(result.outcome, "completed")
+                self.assertEqual(result.completed_steps, 1)
+
+        for name in ("unknown", "", None):
+            with self.subTest(name=name):
+                self.assertIsNone(library.get(name))
+
+    def test_preexisting_cancellation_skips_execution_and_progress(self):
+        scene = SceneLibrary.from_data(scene_data([
+            {"action": "speak", "text": "Hello."},
+        ])).get("test_scene")
+        interrupt = threading.Event()
+        interrupt.set()
+        executor = Mock(return_value=False)
+        progress = Mock()
+
+        result = SceneRunner(executor, progress=progress).run(scene, interrupt)
+
+        executor.assert_not_called()
+        progress.assert_not_called()
+        self.assertEqual(result.outcome, "interrupted")
+        self.assertEqual(result.completed_steps, 0)
+        self.assertEqual(result.total_steps, 1)
+        self.assertFalse(result.timed_out)
+
+    def test_cancellation_is_observed_when_executor_returns_false(self):
+        scene = SceneLibrary.from_data(scene_data([
+            {"action": "eyes", "level": 0.2},
+            {"action": "speak", "text": "Must be skipped."},
+        ])).get("test_scene")
+        interrupt = threading.Event()
+
+        def execute(_step, _stop):
+            interrupt.set()
+            return False
+
+        executor = Mock(side_effect=execute)
+        result = SceneRunner(executor).run(scene, interrupt)
+
+        executor.assert_called_once()
+        self.assertEqual(result.outcome, "interrupted")
+        self.assertEqual(result.completed_steps, 0)
+
+    def test_pause_completion_cancellation_and_timeout(self):
+        scene = SceneLibrary.from_data(scene_data([
+            {"action": "pause", "duration": 2},
+            {"action": "speak", "text": "Finished waiting."},
+        ])).get("test_scene")
+        for outcome, limit, cancelled, waited in (
+            ("completed", 3.0, False, 2.0),
+            ("interrupted", 3.0, True, 2.0),
+            ("timeout", 1.0, False, 1.0),
+        ):
+            with self.subTest(outcome=outcome):
+                clock = FakeClock()
+                interrupt = Mock()
+                interrupt.is_set.return_value = False
+
+                def wait(duration):
+                    clock.now += duration
+                    interrupt.is_set.return_value = cancelled
+                    return cancelled
+
+                interrupt.wait.side_effect = wait
+                executor = Mock(return_value=False)
+                runner = SceneRunner(executor, maximum_seconds=limit, clock=clock)
+
+                result = runner.run(scene, interrupt)
+
+                interrupt.wait.assert_called_once_with(waited)
+                self.assertEqual(result.outcome, outcome)
+                self.assertEqual(result.duration_seconds, waited)
+                self.assertEqual(result.total_steps, 2)
+                self.assertEqual(
+                    result.completed_steps, 2 if outcome == "completed" else 0,
+                )
+                self.assertEqual(result.timed_out, outcome == "timeout")
+                self.assertEqual(result.interrupted, outcome != "completed")
+                if outcome == "completed":
+                    executor.assert_called_once()
+                    self.assertEqual(executor.call_args.args[0], scene.steps[1])
+                else:
+                    executor.assert_not_called()
+
+    def test_new_scene_request_cancels_active_scene_before_starting_next(self):
+        library = SceneLibrary.from_data({"scenes": {
+            "first": {"steps": [
+                {"action": "speak", "text": "First."},
+                {"action": "speak", "text": "Must be skipped."},
+            ]},
+            "second": {"steps": [{"action": "speak", "text": "Second."}]},
+        }})
+        calls = []
+        results = []
+        accepted = []
+
+        def execute(step, stop):
+            text = step.parameters["text"]
+            calls.append(("start", text))
+            if text == "First.":
+                accepted.append(controller.enqueue(EventKind.PLAY_SCENE, "second"))
+            calls.append(("end", text))
+            return stop.is_set()
+
+        runner = SceneRunner(execute)
+
+        def handle(event):
+            scene = library.get(event.payload)
+            results.append(runner.run(scene, controller.scene_interrupt_event))
+            calls.append(("result", scene.name))
+            if scene.name == "second":
+                controller.request_stop("test")
+
+        controller = SkeletonController(handle)
+        self.assertTrue(controller.enqueue(EventKind.PLAY_SCENE, "first"))
+        worker = threading.Thread(target=controller.run_forever, daemon=True)
+        worker.start()
+        try:
+            worker.join(timeout=2.0)
+            self.assertFalse(worker.is_alive())
+        finally:
+            controller.request_stop("test cleanup")
+            worker.join(timeout=2.0)
+
+        self.assertEqual(accepted, [True])
+        self.assertEqual(calls, [
+            ("start", "First."), ("end", "First."), ("result", "first"),
+            ("start", "Second."), ("end", "Second."), ("result", "second"),
+        ])
+        self.assertEqual(
+            [result.outcome for result in results], ["interrupted", "completed"],
+        )
+        self.assertEqual([result.completed_steps for result in results], [0, 1])
+
     def test_runs_steps_in_order_and_reports_progress(self):
         scene = SceneLibrary.from_data(scene_data([
             {"action": "eyes", "level": 0.2},
