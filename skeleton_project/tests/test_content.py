@@ -15,6 +15,100 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ContentPreparationTests(unittest.TestCase):
+    def _prepare(self, **overrides):
+        options = dict(
+            personalities_enabled=True,
+            personalities_path=str(ROOT / "personalities.json"),
+            requested_personality="pirate",
+            current_personality="pirate",
+            scenes_enabled=True,
+            scenes_path=str(ROOT / "scenes.json"),
+            sound_directory=str(ROOT / "sounds"),
+            sound_sample_rate=16000,
+            scene_maximum_seconds=30,
+            cache_sounds=False,
+        )
+        options.update(overrides)
+        return prepare_content(**options)
+
+    def test_missing_content_files_raise_reload_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = str(Path(directory) / "missing.json")
+            for source, label in (("personalities", "personality"), ("scenes", "scene")):
+                with self.subTest(source=source):
+                    with self.assertRaisesRegex(
+                        ContentReloadError, f"cannot inspect {label} file"
+                    ):
+                        self._prepare(**{f"{source}_path": missing})
+
+    def test_malformed_json_raises_reload_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "malformed.json"
+            path.write_text('{"unfinished":', encoding="utf-8")
+            label_map = {"personalities": "personality", "scenes": "scene"}
+            for source in ("personalities", "scenes"):
+                with self.subTest(source=source):
+                    with self.assertRaisesRegex(
+                        ContentReloadError,
+                        f"cannot load {label_map[source]} file",
+                    ):
+                        self._prepare(**{f"{source}_path": str(path)})
+
+    def test_disabled_sources_ignore_missing_files_and_normalize_extra_lines(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = str(Path(directory) / "missing.json")
+            bundle = self._prepare(
+                personalities_enabled=False,
+                personalities_path=missing,
+                scenes_enabled=False,
+                scenes_path=missing,
+                additional_canned_lines=("  Hello\n visitor. ", "", "Hello visitor.", " Bye. "),
+            )
+
+        self.assertIsNone(bundle.personalities)
+        self.assertIsNone(bundle.active_personality)
+        self.assertIsNone(bundle.scenes)
+        self.assertEqual(dict(bundle.sound_cache), {})
+        self.assertEqual(bundle.canned_lines, ("Hello visitor.", "Bye."))
+
+    def test_reload_reads_edits_without_mutating_previous_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            personalities_path = Path(directory) / "personalities.json"
+            scenes_path = Path(directory) / "scenes.json"
+            personalities = json.loads((ROOT / "personalities.json").read_text(encoding="utf-8"))
+            scenes = json.loads((ROOT / "scenes.json").read_text(encoding="utf-8"))
+            personalities_path.write_text(json.dumps(personalities), encoding="utf-8")
+            scenes_path.write_text(json.dumps(scenes), encoding="utf-8")
+            paths = dict(personalities_path=str(personalities_path), scenes_path=str(scenes_path))
+            original = self._prepare(**paths)
+            original_lines = original.canned_lines
+            old_greetings = original.active_personality.opening_lines["morning"]
+
+            personalities["personalities"]["pirate"]["opening_lines"]["morning"] = ["New greeting."]
+            scenes["scenes"]["awakening"]["steps"] = [
+                {"action": "speak", "text": "New scene response."},
+            ]
+            personalities_path.write_text(json.dumps(personalities), encoding="utf-8")
+            scenes_path.write_text(json.dumps(scenes), encoding="utf-8")
+            reloaded = self._prepare(**paths)
+
+            self.assertIsNot(reloaded.personalities, original.personalities)
+            self.assertIsNot(reloaded.scenes, original.scenes)
+            self.assertEqual(reloaded.active_personality.name, "pirate")
+            self.assertEqual(reloaded.active_personality.opening_lines["morning"], ("New greeting.",))
+            self.assertIn("New scene response.", reloaded.canned_lines)
+            self.assertNotIn(old_greetings[0], reloaded.canned_lines)
+            self.assertEqual(original.active_personality.opening_lines["morning"], old_greetings)
+            self.assertEqual(original.canned_lines, original_lines)
+            self.assertNotIn("New greeting.", original.canned_lines)
+            self.assertNotIn("New scene response.", original.canned_lines)
+
+            scenes_path.write_text("{", encoding="utf-8")
+            with self.assertRaises(ContentReloadError):
+                self._prepare(**paths)
+            self.assertEqual(reloaded.active_personality.opening_lines["morning"], ("New greeting.",))
+            self.assertIn("New scene response.", reloaded.canned_lines)
+
     def test_packaged_content_prepares_current_pack_and_scene_lines(self):
         bundle = prepare_content(
             personalities_enabled=True,
