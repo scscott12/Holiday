@@ -1,11 +1,14 @@
 import threading
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
 from holiday_skeleton.speech import (
     PiperSpeechEngine,
+    SpeechEngineError,
+    SpeechMetrics,
     jaw_envelope,
     scale_pcm16,
     split_pcm16_frames,
@@ -118,6 +121,102 @@ class PiperSpeechEngineTests(unittest.TestCase):
             frame_ms=10,
         )
         return engine
+
+    def test_live_speech_trims_edges_and_preserves_spoken_text(self):
+        engine = self.make_engine([FakeChunk([1000] * 10)])
+        text = "Ahoy,  matey!\nCafé time?"
+        started = []
+
+        metrics = engine.speak_phrases(
+            ["", " \t\n", f" \t{text}\n ", "  Goodbye!  "],
+            phrase_started=started.append,
+        )
+
+        self.assertEqual(self.voice.calls, [text, "Goodbye!"])
+        self.assertEqual(started, [text, "Goodbye!"])
+        self.assertEqual(metrics.phrases_spoken, 2)
+        self.assertEqual(metrics.frames_written, 2)
+
+    def test_empty_or_whitespace_speech_produces_no_audio(self):
+        for text in ("", " ", "\t\n  "):
+            with self.subTest(text=text):
+                engine = self.make_engine([FakeChunk([1000] * 10)])
+                first_audio = []
+
+                metrics = engine.speak(text, first_audio=first_audio.append)
+
+                self.assertEqual(metrics, SpeechMetrics(0.0, 0.0, 0.0, 0))
+                self.assertEqual(self.voice.calls, [])
+                self.assertEqual(self.audio.stream.writes, [])
+                self.assertEqual(first_audio, [])
+
+    def test_long_text_reaches_voice_without_truncation_and_plays_all_chunks(self):
+        chunks = [FakeChunk(np.arange(25)), FakeChunk(np.arange(15))]
+        engine = self.make_engine(chunks)
+        text = "Ahoy, matey! " * 10000 + "The end."
+
+        metrics = engine.speak(text)
+
+        self.assertEqual(self.voice.calls, [text])
+        self.assertEqual(
+            b"".join(self.audio.stream.writes),
+            b"".join(chunk.audio_int16_bytes for chunk in chunks),
+        )
+        self.assertEqual(metrics.frames_written, 5)
+        self.assertEqual(metrics.phrases_spoken, 1)
+        self.assertAlmostEqual(metrics.audio_seconds, 0.04)
+
+    def test_synthesis_failure_reports_audio_state_and_allows_recovery(self):
+        for audio_started in (False, True):
+            with self.subTest(audio_started=audio_started):
+                chunk = FakeChunk([1000] * 10)
+                engine = self.make_engine([chunk])
+                failure = RuntimeError("voice synthesis failed")
+
+                def failing_synthesis(text):
+                    if audio_started:
+                        yield chunk
+                    raise failure
+
+                with patch.object(self.voice, "synthesize", failing_synthesis):
+                    with self.assertRaisesRegex(
+                        SpeechEngineError, "^voice synthesis failed$"
+                    ) as raised:
+                        engine.speak("Broken line.")
+
+                self.assertIs(raised.exception.__cause__, failure)
+                self.assertEqual(raised.exception.audio_started, audio_started)
+                self.assertEqual(len(self.audio.stream.writes), int(audio_started))
+                self.assertEqual(self.jaw[-1], 0.25)
+                self.assertEqual(self.audio.stream.stopped, 1)
+                self.assertEqual(self.audio.stream.started, 2)
+                self.assertEqual(engine.speak("Recovered.").frames_written, 1)
+
+    def test_output_failure_reports_audio_state_and_allows_recovery(self):
+        for successful_writes in (0, 1):
+            with self.subTest(successful_writes=successful_writes):
+                engine = self.make_engine([FakeChunk([1000] * 20)])
+                failure = OSError("speaker disconnected")
+                original_write = self.audio.stream.write
+
+                def failing_write(data):
+                    if len(self.audio.stream.writes) == successful_writes:
+                        raise failure
+                    original_write(data)
+
+                with patch.object(self.audio.stream, "write", failing_write):
+                    with self.assertRaisesRegex(
+                        SpeechEngineError, "^speaker disconnected$"
+                    ) as raised:
+                        engine.speak("Broken output.")
+
+                self.assertIs(raised.exception.__cause__, failure)
+                self.assertEqual(raised.exception.audio_started, successful_writes > 0)
+                self.assertEqual(len(self.audio.stream.writes), successful_writes)
+                self.assertEqual(self.jaw[-1], 0.25)
+                self.assertEqual(self.audio.stream.stopped, 1)
+                self.assertEqual(self.audio.stream.started, 2)
+                self.assertEqual(engine.speak("Recovered.").frames_written, 2)
 
     def test_resamples_piper_for_native_stereo_output(self):
         engine = self.make_engine(
