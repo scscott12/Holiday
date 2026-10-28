@@ -81,6 +81,76 @@ class SpeechGateTests(unittest.TestCase):
             end_silence_seconds=0.5,
         )
 
+    def test_idle_gate_blocks_silence_and_noise_at_or_below_threshold(self):
+        for amplitude in (0, 9, 10, -10):
+            with self.subTest(amplitude=amplitude):
+                gate = self.make_gate()
+                samples = np.full(10, amplitude, dtype=np.int16)
+
+                self.assertFalse(gate.speaking)
+                for now in (0.0, 0.1, 0.2, 0.3):
+                    result = gate.process(samples, now)
+                    self.assertEqual(result.audio.size, 0)
+                    self.assertFalse(result.speech_started)
+                    self.assertFalse(gate.speaking)
+                self.assertFalse(gate.silence_complete(100.0))
+
+    def test_mean_absolute_energy_above_threshold_activates_gate(self):
+        gate = self.make_gate()
+        # A zero signed mean is still voiced when mean absolute energy is 11.
+        voice = np.array([11, -11] * 5, dtype=np.int16)
+
+        pending = gate.process(voice, 0.0)
+        self.assertEqual(pending.audio.size, 0)
+        self.assertFalse(pending.speech_started)
+        self.assertFalse(gate.speaking)
+
+        started = gate.process(voice, 0.1)
+        self.assertTrue(gate.speaking)
+        self.assertTrue(started.speech_started)
+        np.testing.assert_array_equal(started.audio, np.tile(voice, 2))
+
+    def test_quiet_block_cancels_brief_noise_burst_progress(self):
+        gate = self.make_gate()
+        voice = np.full(10, 100, dtype=np.int16)
+        # One loud sample does not make the block's mean energy exceed 10.
+        noise = np.array([100] + [0] * 9, dtype=np.int16)
+
+        for now, samples in enumerate((voice, noise, voice)):
+            result = gate.process(samples, now * 0.1)
+            self.assertEqual(result.audio.size, 0)
+            self.assertFalse(result.speech_started)
+            self.assertFalse(gate.speaking)
+
+        started = gate.process(voice, 0.3)
+        self.assertTrue(started.speech_started)
+        self.assertTrue(gate.speaking)
+        np.testing.assert_array_equal(
+            started.audio, np.concatenate((noise, voice, voice))
+        )
+
+    def test_active_gate_passes_quiet_audio_and_refreshes_silence_timer(self):
+        gate = self.make_gate()
+        voice = np.full(10, 100, dtype=np.int16)
+        gate.process(voice, 0.0)
+        gate.process(voice, 0.1)
+
+        for now, amplitude in ((0.2, 0), (0.3, 10), (0.5, -11)):
+            samples = np.full(10, amplitude, dtype=np.int16)
+            result = gate.process(samples, now)
+            np.testing.assert_array_equal(result.audio, samples)
+            self.assertFalse(result.speech_started)
+            self.assertTrue(gate.speaking)
+
+        self.assertFalse(gate.silence_complete(0.99))
+        self.assertTrue(gate.silence_complete(1.0))
+        # The caller resets the gate after handling the silence endpoint.
+        gate.reset()
+        result = gate.process(voice, 1.1)
+        self.assertEqual(result.audio.size, 0)
+        self.assertFalse(result.speech_started)
+        self.assertFalse(gate.speaking)
+
     def test_preroll_is_released_once_when_speech_starts(self):
         gate = self.make_gate()
         quiet = np.zeros(10, dtype=np.int16)
