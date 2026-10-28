@@ -45,6 +45,26 @@ class EventJournalTests(unittest.TestCase):
         self.assertEqual(restored.events, closed.events)
         self.assertIsNone(restored.active_session)
 
+    def test_active_session_round_trip_preserves_entries_and_sequence(self):
+        journal = EventJournal(self.path, maximum_entries=32)
+        journal.start_session()
+        for severity, detail in (
+            ("info", ""),
+            ("warning", "temperature elevated"),
+            ("error", "sensor unavailable: café"),
+        ):
+            journal.record("health", "state_changed", severity, "monitor", detail)
+        expected = journal.snapshot()
+
+        restored = EventJournal(self.path, maximum_entries=32)
+        self.assertEqual(restored.load(), expected)
+
+        appended = restored.record("health", "recovered", source="monitor")
+        self.assertEqual(appended.events[:-1], expected.events)
+        self.assertEqual(appended.last_event.sequence, expected.next_sequence)
+        self.assertEqual(appended.active_session, expected.active_session)
+        self.assertEqual(EventJournal(self.path, maximum_entries=32).load(), appended)
+
     def test_open_session_detects_unclean_previous_runtime(self):
         first = EventJournal(self.path, maximum_entries=32)
         first.start_session()
@@ -103,7 +123,18 @@ class EventJournalTests(unittest.TestCase):
         self.assertEqual(snapshot.count, 16)
         self.assertEqual(snapshot.events[-1].sequence, 31)
         self.assertEqual(snapshot.next_sequence, 32)
-        self.assertGreater(snapshot.events[0].sequence, 1)
+        self.assertEqual(
+            [event.sequence for event in snapshot.events], list(range(16, 32))
+        )
+        self.assertEqual(
+            [event.detail for event in snapshot.events],
+            [f"failure {index}" for index in range(14, 30)],
+        )
+        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            payload["events"], [event.to_payload() for event in snapshot.events]
+        )
+        self.assertEqual(EventJournal(self.path, maximum_entries=16).load(), snapshot)
 
     def test_concurrent_writers_keep_unique_ordered_events(self):
         journal = EventJournal(self.path, maximum_entries=128)
@@ -204,6 +235,25 @@ class EventJournalTests(unittest.TestCase):
 
         self.assertEqual(self.path.read_bytes(), original)
 
+    def test_load_rejects_corrupt_and_truncated_files_without_replacement(self):
+        journal = EventJournal(self.path)
+        journal.start_session()
+        valid = self.path.read_bytes()
+
+        for label, raw in (
+            ("empty", b""),
+            ("invalid_json", b"not json"),
+            ("invalid_utf8", b"\xff"),
+            ("truncated", valid.rstrip()[:-1]),
+        ):
+            with self.subTest(label=label):
+                self.path.write_bytes(raw)
+
+                with self.assertRaisesRegex(EventJournalError, "cannot parse"):
+                    EventJournal(self.path).load()
+
+                self.assertEqual(self.path.read_bytes(), raw)
+
     def test_unknown_fields_and_invalid_tokens_are_rejected(self):
         journal = EventJournal(self.path)
         journal.start_session()
@@ -227,7 +277,8 @@ class EventJournalTests(unittest.TestCase):
         restored = EventJournal(self.path, maximum_entries=16).load()
 
         self.assertEqual(restored.count, 16)
-        self.assertEqual(restored.events[-1].detail, "19")
+        self.assertEqual(restored.events, journal.snapshot().events[-16:])
+        self.assertEqual(restored.next_sequence, journal.snapshot().next_sequence)
 
     def test_existing_credential_text_is_rejected_before_publication(self):
         journal = EventJournal(self.path)
