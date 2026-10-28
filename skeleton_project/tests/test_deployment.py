@@ -177,6 +177,75 @@ class DeploymentTests(unittest.TestCase):
         os.symlink(Path("releases") / "old", self.prefix / "current")
         return old
 
+    def _assert_existing_release_untouched(self, old, systemd):
+        self.assertEqual(os.readlink(self.prefix / "current"), "releases/old")
+        self.assertEqual((old / "old.txt").read_text(), "working")
+        self.assertEqual(list(self.prefix.joinpath("releases").iterdir()), [old])
+        self.assertEqual(self.unit.read_text(), "legacy unit\n")
+        self.assertEqual(
+            (self.state / "operator-settings.json").read_text(), '{"version": 3}\n'
+        )
+        self.assertEqual(
+            (self.prefix / "scenes.json").read_text(), '{"scenes": ["custom"]}\n'
+        )
+        self._assert_legacy_metadata()
+        self.assertFalse(self._deployer().paths.record.exists())
+        self.assertEqual(systemd.events, [])
+
+    def test_missing_source_aborts_without_changing_existing_release(self):
+        old = self._old_versioned_install()
+        self.source.rename(self.root / "moved-source")
+        systemd = FakeSystemd()
+
+        with self.assertRaisesRegex(DeploymentError, "release source is missing"):
+            self._deployer(systemd).deploy("missing-source")
+
+        self._assert_existing_release_untouched(old, systemd)
+
+    def test_unwritable_staging_target_cleans_up_partial_release(self):
+        old = self._old_versioned_install()
+        systemd = FakeSystemd()
+        deployer = self._deployer(systemd)
+
+        # Inject a write failure after staging starts, even when run as root.
+        with mock.patch(
+            "holiday_skeleton.deployment.shutil.copy2",
+            side_effect=PermissionError("target is unwritable"),
+        ) as copy:
+            with self.assertRaisesRegex(DeploymentError, "cannot stage release files"):
+                deployer.deploy("unwritable-target")
+        copy.assert_called_once()
+
+        self._assert_existing_release_untouched(old, systemd)
+
+    def test_failed_manifest_validation_cleans_up_staged_release(self):
+        old = self._old_versioned_install()
+        systemd = FakeSystemd()
+        deployer = self._deployer(systemd)
+        verify_manifest = deployer._verify_manifest
+
+        def tamper_before_validation(release):
+            (release / "skeleton_all_in_one_mqtt.py").write_text("VALUE = 2\n")
+            verify_manifest(release)
+
+        with mock.patch.object(
+            deployer, "_verify_manifest", side_effect=tamper_before_validation
+        ) as verify:
+            with self.assertRaisesRegex(DeploymentError, "changed after staging"):
+                deployer.deploy("invalid-release")
+        verify.assert_called_once()
+
+        self._assert_existing_release_untouched(old, systemd)
+
+    def test_duplicate_release_is_rejected_without_changing_existing_release(self):
+        old = self._old_versioned_install()
+        systemd = FakeSystemd()
+
+        with self.assertRaisesRegex(DeploymentError, "release already exists"):
+            self._deployer(systemd).deploy("old")
+
+        self._assert_existing_release_untouched(old, systemd)
+
     def test_release_id_is_strict_and_path_safe(self):
         self.assertEqual(validate_release_id("v1.0-abc_12"), "v1.0-abc_12")
         for value in ("", ".", "..", "../escape", "bad name", "staging-x"):

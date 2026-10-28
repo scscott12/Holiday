@@ -252,6 +252,42 @@ class ReleaseCandidateEvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(ReleaseCandidateError, "does not match"):
                 verify_digest(path)
 
+    def test_failed_validation_preserves_existing_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "evidence.json"
+            evidence = new_evidence(CANDIDATE, COMMIT, now=lambda: stamp())
+            save_evidence(path, evidence)
+            original = path.read_bytes()
+            evidence["status"] = "invalid"
+
+            with self.assertRaisesRegex(ReleaseCandidateError, "evidence status"):
+                save_evidence(path, evidence)
+
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(list(path.parent.iterdir()), [path])
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_unwritable_target_preserves_evidence_and_removes_temporary_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "evidence.json"
+            evidence = new_evidence(CANDIDATE, COMMIT, now=lambda: stamp())
+            save_evidence(path, evidence)
+            original = path.read_bytes()
+            pass_checks(evidence)
+
+            with mock.patch(
+                "holiday_skeleton.release_candidate.os.replace",
+                side_effect=PermissionError("target is unwritable"),
+            ) as replace:
+                with self.assertRaisesRegex(ReleaseCandidateError, "cannot write"):
+                    save_evidence(path, evidence)
+            replace.assert_called_once()
+
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(list(path.parent.iterdir()), [path])
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(load_evidence(path)["checks"]["deploy_verified"]["status"], "pending")
+
     def test_digest_can_be_recreated_for_unchanged_final_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "v1.0-rc1.json"
