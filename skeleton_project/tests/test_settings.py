@@ -161,6 +161,130 @@ class OperatorSettingsStoreTests(unittest.TestCase):
                 with self.assertRaisesRegex(SettingsConfigError, message):
                     settings_from_payload(payload)
 
+    def test_requires_every_field_in_each_object(self):
+        for path in ((), ("settings",), ("settings", "day_profile"),
+                     ("settings", "calibration")):
+            fields = sample_settings().to_payload()
+            for key in path:
+                fields = fields[key]
+            for field in fields:
+                with self.subTest(path=path, field=field):
+                    payload = sample_settings().to_payload()
+                    target = payload
+                    for key in path:
+                        target = target[key]
+                    del target[field]
+                    with self.assertRaisesRegex(
+                        SettingsConfigError, f"missing fields: {field}"
+                    ):
+                        settings_from_payload(payload)
+
+    def test_rejects_non_objects_and_unknown_fields_at_each_level(self):
+        for path in ((), ("settings",), ("settings", "day_profile"),
+                     ("settings", "calibration")):
+            for value in (None, [], "object", 1, True, {"unexpected": 1}):
+                with self.subTest(path=path, value=value):
+                    payload = sample_settings().to_payload()
+                    if path:
+                        target = payload
+                        for key in path[:-1]:
+                            target = target[key]
+                        target[path[-1]] = value
+                    else:
+                        payload = value
+                    message = (
+                        "unknown fields: unexpected" if isinstance(value, dict)
+                        else "must be an object"
+                    )
+                    with self.assertRaisesRegex(SettingsConfigError, message):
+                        settings_from_payload(payload)
+
+    def test_numeric_bounds_and_invalid_values(self):
+        levels = (("eyes_dim", 0, 1), ("eyes_full", 0, 1), ("volume", 0, 2))
+        hardware = (
+            ("jaw_rest", 0, 0.7),
+            ("jaw_max", 0.1, 1),
+            ("microphone_gate", 25, 5000),
+            ("pir_hold_seconds", 0.1, 5),
+            ("pir_cooldown_seconds", 1, 120),
+        )
+        for section, bounds in ((None, levels), ("day_profile", levels),
+                                ("calibration", hardware)):
+            for field, minimum, maximum in bounds:
+                cases = [(value, None) for value in (minimum, maximum)]
+                cases += [(value, "must be a number") for value in
+                          (None, True, False, "0.5", [], {})]
+                cases += [(value, f"must be between {minimum:g} and {maximum:g}")
+                          for value in (minimum - 0.01, maximum + 0.01,
+                                        float("nan"), float("inf"), float("-inf"))]
+                for value, message in cases:
+                    with self.subTest(section=section, field=field, value=value):
+                        payload = sample_settings().to_payload()
+                        target = payload["settings"]
+                        if section:
+                            target = target[section]
+                        # Keep the paired jaw endpoint valid at either bound.
+                        if field == "jaw_max":
+                            target["jaw_rest"] = 0
+                        target[field] = value
+                        if message:
+                            with self.assertRaisesRegex(
+                                SettingsConfigError, f"{field} {message}"
+                            ):
+                                settings_from_payload(payload)
+                        else:
+                            restored = settings_from_payload(payload)
+                            if section:
+                                restored = getattr(restored, section)
+                            self.assertEqual(getattr(restored, field), value)
+
+    def test_boolean_fields_require_actual_booleans(self):
+        for field in ("motion_enabled", "idle_life_enabled", "night_mode",
+                      "maintenance_mode"):
+            for value in (None, 0, 1, "true", "false", [], {}):
+                with self.subTest(field=field, value=value):
+                    payload = sample_settings().to_payload()
+                    payload["settings"][field] = value
+                    with self.assertRaisesRegex(
+                        SettingsConfigError, f"{field} must be true or false"
+                    ):
+                        settings_from_payload(payload)
+
+    def test_rejects_invalid_metadata(self):
+        cases = (
+            ("version", (None, False, "3", [], {}, 0, -1, 3.5),
+             "unsupported settings version"),
+            ("updated_at", (None, True, 1, [], {}, "", "x" * 65),
+             "short timestamp"),
+        )
+        for field, values, message in cases:
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    payload = sample_settings().to_payload()
+                    payload[field] = value
+                    with self.assertRaisesRegex(SettingsConfigError, message):
+                        settings_from_payload(payload)
+
+    def test_personality_name_limits_and_invalid_values(self):
+        for name in ("a", "a" * 64, "0_host-name"):
+            with self.subTest(name=name):
+                payload = sample_settings(personality=name).to_payload()
+                self.assertEqual(settings_from_payload(payload).personality, name)
+        for name in (None, 1, True, [], {}, "", "a" * 65, "Host", "host name", "host\n"):
+            with self.subTest(name=name):
+                payload = sample_settings(personality=name).to_payload()
+                with self.assertRaisesRegex(SettingsConfigError, "safe lowercase name"):
+                    settings_from_payload(payload)
+
+    def test_rejects_empty_and_invalid_utf8_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            for raw in (b"", b"\xff"):
+                with self.subTest(raw=raw):
+                    path.write_bytes(raw)
+                    with self.assertRaisesRegex(SettingsConfigError, "cannot parse"):
+                        OperatorSettingsStore(path).load()
+
     def test_rejects_malformed_and_oversized_files(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "operator-settings.json"
