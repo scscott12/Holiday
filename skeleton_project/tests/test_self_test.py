@@ -80,6 +80,7 @@ class SelfTestRunnerTests(unittest.TestCase):
 
         result = SelfTestRunner().run(
             (
+                SelfTestStep("speaker", lambda _stop: "played"),
                 SelfTestStep("eyes", fail),
                 SelfTestStep("jaw", lambda _stop: "moved"),
             ),
@@ -88,7 +89,34 @@ class SelfTestRunnerTests(unittest.TestCase):
 
         self.assertEqual(result.outcome, "failed")
         self.assertEqual(result.error, "eyes: PWM write failed")
-        self.assertEqual(len(result.steps), 2)
+        self.assertEqual(
+            [(step.name, step.status, step.detail) for step in result.steps],
+            [
+                ("speaker", SelfTestStepStatus.PASSED, "played"),
+                ("eyes", SelfTestStepStatus.FAILED, "PWM write failed"),
+                ("jaw", SelfTestStepStatus.PASSED, "moved"),
+            ],
+        )
+
+    def test_unexpected_exception_without_message_is_reported_by_type(self):
+        def fail(_stop):
+            raise ValueError()
+
+        result = SelfTestRunner().run(
+            (SelfTestStep("eyes", fail),),
+            threading.Event(),
+        )
+
+        self.assertEqual(result.outcome, "failed")
+        self.assertEqual(result.error, "eyes: ValueError")
+        self.assertFalse(result.interrupted)
+        self.assertFalse(result.timed_out)
+        payload = json.loads(result.report_json())
+        self.assertEqual(payload["outcome"], "failed")
+        self.assertEqual(
+            payload["steps"],
+            [{"name": "eyes", "status": "failed", "detail": "ValueError"}],
+        )
 
     def test_foreground_interrupt_stops_before_next_step(self):
         interrupt = threading.Event()

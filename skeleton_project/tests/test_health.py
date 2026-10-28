@@ -59,6 +59,33 @@ class RuntimeHealthMonitorTests(unittest.TestCase):
         self.assertEqual(snapshot.state, HealthState.UNHEALTHY)
         self.assertFalse(snapshot.operational)
 
+    def test_component_failure_or_degradation_recovers_to_healthy(self):
+        cases = (
+            (ComponentState.DEGRADED, False, HealthState.DEGRADED),
+            (ComponentState.DEGRADED, True, HealthState.DEGRADED),
+            (ComponentState.FAILED, False, HealthState.DEGRADED),
+            (ComponentState.FAILED, True, HealthState.UNHEALTHY),
+        )
+        for state, critical, expected in cases:
+            with self.subTest(state=state, critical=critical):
+                monitor, published = self.monitor()
+                monitor.set_component("runtime", ComponentState.READY, critical=True)
+                monitor.set_component("speech", ComponentState.READY, critical=critical)
+                self.assertEqual(published[-1].state, HealthState.HEALTHY)
+
+                monitor.set_component("speech", state, "audio unavailable", critical=critical)
+
+                self.assertEqual(published[-1].state, expected)
+                self.assertEqual(published[-1].reasons, ("speech: audio unavailable",))
+                self.assertEqual(published[-1].operational, expected is not HealthState.UNHEALTHY)
+
+                monitor.set_component("speech", ComponentState.READY, critical=critical)
+
+                self.assertEqual(published[-1].state, HealthState.HEALTHY)
+                self.assertTrue(published[-1].operational)
+                self.assertEqual(published[-1].reasons, ())
+                self.assertEqual(published[-1].components["speech"].state, ComponentState.READY)
+
     def test_starting_and_stopping_take_precedence(self):
         monitor, _ = self.monitor()
         monitor.set_component("runtime", ComponentState.STARTING, critical=True, publish=False)
