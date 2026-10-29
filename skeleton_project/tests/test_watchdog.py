@@ -166,6 +166,71 @@ class ControllerWatchdogTests(unittest.TestCase):
         self.assertEqual(watchdog.snapshot().state, WatchdogState.READY)
         self.assertEqual(watchdog.snapshot().feed_count, 2)
 
+    def test_trip_at_exact_stale_boundary_still_feeds(self):
+        watchdog, clock, _sent, _snapshots = self.make_watchdog()
+        watchdog.pulse("working")
+        self.assertTrue(watchdog.feed_once())
+
+        clock.advance(45.0)
+        # age == stale_after_seconds is NOT stale (feed_once uses age > stale)
+        self.assertTrue(watchdog.feed_once())
+        self.assertEqual(watchdog.snapshot().state, WatchdogState.READY)
+
+    def test_trip_just_past_stale_boundary_withholds_feed(self):
+        watchdog, clock, _sent, _snapshots = self.make_watchdog()
+        watchdog.pulse("working")
+        self.assertTrue(watchdog.feed_once())
+
+        clock.advance(45.001)
+        self.assertFalse(watchdog.feed_once())
+        self.assertEqual(watchdog.snapshot().state, WatchdogState.STALE)
+        self.assertIn("stale", watchdog.snapshot().last_error)
+
+    def test_reset_clears_trip_by_reshowing_progress(self):
+        watchdog, clock, _sent, _snapshots = self.make_watchdog()
+        watchdog.pulse("speaking")
+        self.assertTrue(watchdog.feed_once())
+        self.assertEqual(watchdog.snapshot().state, WatchdogState.READY)
+
+        # Trip: controller goes stale
+        clock.advance(46.0)
+        self.assertFalse(watchdog.feed_once())
+        self.assertEqual(watchdog.snapshot().state, WatchdogState.STALE)
+
+        # Reset: pulse clears the trip by resetting the age to zero
+        watchdog.pulse("idle")
+        self.assertTrue(watchdog.feed_once())
+        self.assertEqual(watchdog.snapshot().state, WatchdogState.READY)
+        self.assertEqual(watchdog.snapshot().feed_count, 2)
+        self.assertEqual(watchdog.snapshot().last_error, "")
+
+    def test_multiple_consecutive_trips_then_recover(self):
+        watchdog, clock, _sent, _snapshots = self.make_watchdog()
+        watchdog.pulse("working")
+        self.assertTrue(watchdog.feed_once())
+        self.assertEqual(watchdog.snapshot().feed_count, 1)
+
+        # Trip 1
+        clock.advance(46.0)
+        self.assertFalse(watchdog.feed_once())
+        self.assertEqual(watchdog.snapshot().state, WatchdogState.STALE)
+
+        # Trip 2 (still stale, still withholding)
+        clock.advance(10.0)
+        self.assertFalse(watchdog.feed_once())
+        self.assertEqual(watchdog.snapshot().state, WatchdogState.STALE)
+
+        # Trip 3
+        clock.advance(10.0)
+        self.assertFalse(watchdog.feed_once())
+        self.assertEqual(watchdog.snapshot().state, WatchdogState.STALE)
+
+        # Recovery: a new pulse resets the clock
+        watchdog.pulse("idle")
+        self.assertTrue(watchdog.feed_once())
+        self.assertEqual(watchdog.snapshot().state, WatchdogState.READY)
+        self.assertEqual(watchdog.snapshot().feed_count, 2)
+
     def test_no_controller_heartbeat_never_fakes_liveness(self):
         watchdog, _clock, sent, _snapshots = self.make_watchdog()
 
