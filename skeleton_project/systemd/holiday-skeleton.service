@@ -22,6 +22,12 @@ WatchdogSec=60
 Environment=PYTHONUNBUFFERED=1
 Environment=LG_WD=/run/holiday-skeleton
 SupplementaryGroups=gpio i2c audio video
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
 
 [Install]
 WantedBy=multi-user.target

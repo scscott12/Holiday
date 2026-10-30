@@ -4,6 +4,10 @@ Environment="MQTT_HOST=<ipAddress>"
 Environment="MQTT_PORT=1883"
 Environment="MQTT_USER=<Username>"
 Environment="MQTT_PASS=your!pass"
+# Enable TLS when the broker supports it. Port 8883 is conventional.
+# Environment="MQTT_TLS=1"
+# Environment="MQTT_PORT=8883"
+# Environment="MQTT_CA_CERT=/etc/ssl/certs/ca-certificates.crt"
 
 Environment="EYES_INVERT=0"
 Environment="EYES_IDLE_FRAC=0.0"

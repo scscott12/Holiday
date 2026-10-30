@@ -1,29 +1,118 @@
 title: Skeleton
 views:
-  - title: Controls
+  - title: Operate
+    path: operate
+    icon: mdi:skull
     cards:
       - type: entities
-        title: Skeleton Main
+        title: Ready & Safety
+        show_header_toggle: false
         entities:
+          - binary_sensor.skeleton_ready
+          - binary_sensor.skeleton_health_ok
+          - sensor.skeleton_status
           - switch.skeleton_maintenance_mode
+          - binary_sensor.skeleton_motion
+          - binary_sensor.skeleton_speaking
+      - type: entities
+        title: Character
+        show_header_toggle: false
+        entities:
+          - select.skeleton_personality
+          - button.skeleton_play_personality_scene
+          - text.skeleton_say
+          - number.skeleton_volume
           - switch.skeleton_motion_enabled
           - switch.skeleton_idle_life_enabled
           - switch.skeleton_night_mode
-          - number.skeleton_eyes_dim
-          - number.skeleton_eyes_full
-          - number.skeleton_volume
-          - select.skeleton_personality
-          - button.skeleton_play_personality_scene
-          - button.skeleton_run_self_test
-          - button.skeleton_stop_self_test
-          - button.skeleton_reload_content
+      - type: entities
+        title: Quick Actions
+        show_header_toggle: false
+        entities:
+          - button.skeleton_trigger_motion
           - button.skeleton_blink
           - button.skeleton_flicker
-          - text.skeleton_say
+          - number.skeleton_eyes_dim
+          - number.skeleton_eyes_full
+      - type: entities
+        title: Current Visit
+        show_header_toggle: false
+        entities:
+          - sensor.skeleton_transcript
+          - binary_sensor.skeleton_barge_in_enabled
+          - binary_sensor.skeleton_barge_in_listening
+          - sensor.skeleton_barge_in_state
+          - sensor.skeleton_last_barge_in_command
+          - sensor.skeleton_last_barge_in_action
+
+  - title: Scenes
+    path: scenes
+    icon: mdi:drama-masks
+    cards:
+      - type: entities
+        title: Scene Controls
+        show_header_toggle: false
+        entities:
           - text.skeleton_play_scene
           - button.skeleton_stop_scene
+          - button.skeleton_play_personality_scene
+          - button.skeleton_reload_content
       - type: entities
-        title: Guided Hardware Calibration
+        title: Scene Status
+        show_header_toggle: false
+        entities:
+          - binary_sensor.skeleton_scene_active
+          - sensor.skeleton_scene_state
+          - sensor.skeleton_current_scene
+          - sensor.skeleton_scene_step
+          - sensor.skeleton_scene_library
+          - sensor.skeleton_scene_last_result
+          - sensor.skeleton_scene_last_duration
+          - sensor.skeleton_scene_last_error
+      - type: entities
+        title: Personality & Content
+        show_header_toggle: false
+        entities:
+          - sensor.skeleton_personality_state
+          - sensor.skeleton_personality_library
+          - sensor.skeleton_personality_default_scene
+          - sensor.skeleton_personality_last_result
+          - sensor.skeleton_personality_last_error
+          - binary_sensor.skeleton_content_reload_active
+          - sensor.skeleton_content_reload_state
+          - sensor.skeleton_content_reload_last_result
+          - sensor.skeleton_content_reload_last_error
+          - sensor.skeleton_content_reload_last_run
+
+  - title: Setup & Test
+    path: setup
+    icon: mdi:tools
+    cards:
+      - type: entities
+        title: Safety Lockout
+        show_header_toggle: false
+        entities:
+          - switch.skeleton_maintenance_mode
+          - sensor.skeleton_maintenance_state
+          - sensor.skeleton_maintenance_last_result
+          - sensor.skeleton_maintenance_last_error
+          - sensor.skeleton_maintenance_state_since
+          - sensor.skeleton_maintenance_blocked_commands
+      - type: entities
+        title: Operator Self-Test
+        show_header_toggle: false
+        entities:
+          - button.skeleton_run_self_test
+          - button.skeleton_stop_self_test
+          - binary_sensor.skeleton_self_test_active
+          - sensor.skeleton_self_test_state
+          - sensor.skeleton_self_test_step
+          - sensor.skeleton_self_test_last_result
+          - sensor.skeleton_self_test_last_error
+          - sensor.skeleton_self_test_last_run
+      - type: entities
+        title: Guided Calibration
+        show_header_toggle: false
         entities:
           - binary_sensor.skeleton_calibration_active
           - sensor.skeleton_calibration_state
@@ -48,96 +137,37 @@ views:
           - sensor.skeleton_calibration_last_error
           - sensor.skeleton_calibration_last_saved
       - type: entities
-        title: Status
+        title: Saved Settings
+        show_header_toggle: false
         entities:
-          - binary_sensor.skeleton_motion
-          - binary_sensor.skeleton_speaking
-          - binary_sensor.skeleton_barge_in_enabled
-          - binary_sensor.skeleton_barge_in_listening
-          - sensor.skeleton_barge_in_state
-          - sensor.skeleton_last_barge_in_command
-          - sensor.skeleton_barge_in_latency
-          - binary_sensor.skeleton_idle_life_active
-          - sensor.skeleton_idle_life_state
-          - sensor.skeleton_idle_life_last_action
-          - sensor.skeleton_idle_life_count
-          - sensor.skeleton_idle_life_interrupted
-          - binary_sensor.skeleton_scene_active
-          - sensor.skeleton_scene_state
-          - sensor.skeleton_current_scene
-          - sensor.skeleton_scene_step
-          - sensor.skeleton_scene_library
-          - sensor.skeleton_scene_count
-          - sensor.skeleton_scenes_interrupted
-          - sensor.skeleton_scene_last_result
-          - sensor.skeleton_scene_last_duration
-          - sensor.skeleton_scene_last_error
-          - sensor.skeleton_personality_state
-          - sensor.skeleton_personality_library
-          - sensor.skeleton_personality_default_scene
-          - sensor.skeleton_personality_last_result
-          - sensor.skeleton_personality_last_error
-          - sensor.skeleton_personality_switch_count
-          - binary_sensor.skeleton_content_reload_active
-          - sensor.skeleton_content_reload_state
-          - sensor.skeleton_content_reload_last_result
-          - sensor.skeleton_content_reload_last_error
-          - sensor.skeleton_content_reload_last_run
-          - sensor.skeleton_content_reload_last_duration
-          - sensor.skeleton_content_reload_count
-          - sensor.skeleton_content_reloads_interrupted
           - sensor.skeleton_saved_settings_state
           - sensor.skeleton_settings_last_saved
           - sensor.skeleton_settings_last_error
           - sensor.skeleton_settings_save_count
-          - sensor.skeleton_maintenance_state
-          - sensor.skeleton_maintenance_last_result
-          - sensor.skeleton_maintenance_last_error
-          - sensor.skeleton_maintenance_state_since
-          - sensor.skeleton_maintenance_blocked_commands
-          - binary_sensor.skeleton_calibration_active
-          - sensor.skeleton_calibration_state
-          - sensor.skeleton_calibration_current_step
-          - sensor.skeleton_calibration_instruction
-          - sensor.skeleton_calibration_last_result
-          - sensor.skeleton_calibration_last_error
-          - sensor.skeleton_calibration_last_preview
-          - sensor.skeleton_calibration_last_saved
-          - sensor.skeleton_calibration_save_count
-          - sensor.skeleton_calibration_preview_count
-          - binary_sensor.skeleton_self_test_active
-          - sensor.skeleton_self_test_state
-          - sensor.skeleton_self_test_step
-          - sensor.skeleton_self_test_last_result
-          - sensor.skeleton_self_test_last_error
-          - sensor.skeleton_self_test_last_run
-          - sensor.skeleton_self_test_count
-          - sensor.skeleton_self_tests_interrupted
-          - sensor.skeleton_status
-          - sensor.skeleton_reply_time
-          - sensor.skeleton_llm_first_token
-          - sensor.skeleton_llm_first_phrase
-          - sensor.skeleton_response_first_audio
-          - sensor.skeleton_memory_turns
-          - sensor.skeleton_tts_engine
-          - sensor.skeleton_tts_model_load_time
-          - sensor.skeleton_tts_warmup_time
-          - sensor.skeleton_tts_cache_state
-          - sensor.skeleton_tts_cached_lines
-          - sensor.skeleton_tts_cache_warmup_time
-          - sensor.skeleton_tts_cache_memory
-          - binary_sensor.skeleton_tts_cache_hit
-          - sensor.skeleton_tts_first_audio
-          - sensor.skeleton_greeting_first_audio
-          - sensor.skeleton_tts_speak_time
-          - sensor.skeleton_transcript
+          - button.skeleton_restart_service
+
+  - title: Diagnostics
+    path: diagnostics
+    icon: mdi:stethoscope
+    cards:
       - type: entities
-        title: Health & Performance
+        title: Runtime Health
+        show_header_toggle: false
         entities:
           - binary_sensor.skeleton_health_ok
           - sensor.skeleton_health
           - sensor.skeleton_health_reasons
           - sensor.skeleton_health_last_update
+          - sensor.skeleton_cpu_temperature
+          - sensor.skeleton_cpu_load_1m
+          - sensor.skeleton_memory_use
+          - sensor.skeleton_disk_use
+          - binary_sensor.skeleton_pi_throttled
+          - sensor.skeleton_pi_throttle_flags
+      - type: entities
+        title: Watchdog & Journal
+        show_header_toggle: false
+        entities:
           - binary_sensor.skeleton_watchdog_enabled
           - sensor.skeleton_watchdog_state
           - sensor.skeleton_controller_heartbeat_age
@@ -147,18 +177,35 @@ views:
           - sensor.skeleton_event_journal_state
           - sensor.skeleton_event_journal_last_event
           - sensor.skeleton_event_journal_last_event_at
-          - sensor.skeleton_event_journal_count
           - sensor.skeleton_event_journal_warning_count
           - sensor.skeleton_event_journal_error_count
           - sensor.skeleton_event_journal_last_error
-          - sensor.skeleton_cpu_temperature
-          - sensor.skeleton_cpu_load_1m
-          - sensor.skeleton_memory_use
-          - sensor.skeleton_disk_use
-          - binary_sensor.skeleton_pi_throttled
-          - sensor.skeleton_pi_throttle_flags
+      - type: entities
+        title: Audio & Conversation
+        show_header_toggle: false
+        entities:
+          - sensor.skeleton_tts_engine
+          - sensor.skeleton_tts_cache_state
+          - sensor.skeleton_tts_cached_lines
+          - sensor.skeleton_tts_model_load_time
+          - sensor.skeleton_tts_warmup_time
+          - sensor.skeleton_tts_first_audio
+          - sensor.skeleton_greeting_first_audio
+          - sensor.skeleton_response_first_audio
+          - sensor.skeleton_reply_time
           - sensor.skeleton_audio_dropped_frames
-          - sensor.skeleton_response_first_audio_rolling_average
-          - sensor.skeleton_response_first_audio_rolling_p95
-          - sensor.skeleton_llm_reply_rolling_average
-          - sensor.skeleton_llm_reply_rolling_p95
+          - sensor.skeleton_barge_in_latency
+          - sensor.skeleton_barge_in_count
+      - type: entities
+        title: Activity Counters
+        show_header_toggle: false
+        entities:
+          - sensor.skeleton_scene_count
+          - sensor.skeleton_scenes_interrupted
+          - sensor.skeleton_personality_switch_count
+          - sensor.skeleton_content_reload_count
+          - sensor.skeleton_content_reloads_interrupted
+          - sensor.skeleton_self_test_count
+          - sensor.skeleton_self_tests_interrupted
+          - sensor.skeleton_idle_life_count
+          - sensor.skeleton_idle_life_interrupted

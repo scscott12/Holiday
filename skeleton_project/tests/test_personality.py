@@ -99,6 +99,52 @@ class PersonalityLibraryTests(unittest.TestCase):
         self.assertEqual(personality.canned_lines.count("Same."), 1)
         self.assertEqual(personality.canned_lines[0], "Same.")
 
+    def test_legacy_goodbye_list_is_available_in_every_daypart(self):
+        personality = PersonalityLibrary.from_data({
+            "personalities": {"ghost": pack(goodbye_lines=["Goodbye."])}
+        }).select()
+
+        for period in ("morning", "afternoon", "evening", "night"):
+            self.assertEqual(personality.goodbye_lines_for(period), ("Goodbye.",))
+
+    def test_daypart_goodbyes_are_validated_and_selected(self):
+        goodbyes = {
+            "morning": ["Good morning."],
+            "afternoon": ["Good afternoon."],
+            "evening": ["Good evening."],
+            "night": ["Good night."],
+        }
+        personality = PersonalityLibrary.from_data({
+            "personalities": {"ghost": pack(goodbye_lines=goodbyes)}
+        }).select()
+
+        self.assertEqual(
+            personality.goodbye_lines_for("evening"),
+            ("Good evening.",),
+        )
+        self.assertIn("Good night.", personality.canned_lines)
+
+        invalid = dict(goodbyes)
+        invalid.pop("night")
+        with self.assertRaisesRegex(PersonalityConfigError, "goodbye_lines.night"):
+            PersonalityLibrary.from_data({
+                "personalities": {"ghost": pack(goodbye_lines=invalid)}
+            })
+
+    def test_packaged_personalities_have_full_daypart_line_pools(self):
+        root = Path(__file__).resolve().parents[1]
+        library = PersonalityLibrary.load(root / "personalities.json")
+
+        for name in library.names:
+            personality = library.select(name)
+            for period in ("morning", "afternoon", "evening", "night"):
+                self.assertGreaterEqual(
+                    len(personality.opening_lines[period]), 10, (name, period)
+                )
+                self.assertGreaterEqual(
+                    len(personality.goodbye_lines_for(period)), 10, (name, period)
+                )
+
     def test_explicit_selection_normalizes_name_and_rejects_unknown(self):
         library = PersonalityLibrary.from_data({
             "personalities": {"ghost": pack(), "watcher": pack(display_name="Watcher")}

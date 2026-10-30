@@ -127,6 +127,11 @@ MQTT_HOST    = envs("MQTT_HOST", "<ipAddress>")
 MQTT_PORT    = int(envs("MQTT_PORT", "1883"))
 MQTT_USER    = envs("MQTT_USER", "<Username>")
 MQTT_PASS    = envs("MQTT_PASS", "")
+MQTT_TLS     = envs("MQTT_TLS", "0").strip().lower() in ("1","true","yes","on")
+MQTT_CA_CERT = envs("MQTT_CA_CERT", "").strip() or None
+MQTT_CERTFILE= envs("MQTT_CERTFILE", "").strip() or None
+MQTT_KEYFILE = envs("MQTT_KEYFILE", "").strip() or None
+MQTT_MAX_PAYLOAD_BYTES = bounded_env_int("MQTT_MAX_PAYLOAD_BYTES",4096,64,65536)
 MQTT_BASE    = f"holiday/{DEVICE_NAME}"
 
 MODEL_PATH   = envs("MODEL_PATH", f"{USER_HOME}/models/vosk-en")
@@ -401,12 +406,21 @@ def _pick_fresh(kind,lines):
     line=random.choice(choices); _last_lines[kind]=line
     return line
 
-def pick_opening_line()->str:
+def _current_daypart()->str:
     hr=datetime.now().hour
-    if 5<=hr<12: return _pick_fresh("opening",MORNING_LINES)
-    if 12<=hr<17: return _pick_fresh("opening",AFTERNOON_LINES)
-    if 17<=hr<21: return _pick_fresh("opening",EVENING_LINES)
-    return _pick_fresh("opening",NIGHT_LINES)
+    if 5<=hr<12: return "morning"
+    if 12<=hr<17: return "afternoon"
+    if 17<=hr<21: return "evening"
+    return "night"
+
+def pick_opening_line()->str:
+    lines={
+        "morning":MORNING_LINES,
+        "afternoon":AFTERNOON_LINES,
+        "evening":EVENING_LINES,
+        "night":NIGHT_LINES,
+    }[_current_daypart()]
+    return _pick_fresh("opening",lines)
 
 def _try_load_prompts():
     global SYSTEM_PROMPT,MORNING_LINES,AFTERNOON_LINES,EVENING_LINES,NIGHT_LINES,GOODBYE_LINES,IDLE_LINES
@@ -867,6 +881,16 @@ def _calibration_mqtt_command(topic,payload):
     return True
 
 def _on_message(client,userdata,msg):
+    if len(msg.payload)>MQTT_MAX_PAYLOAD_BYTES:
+        print(
+            f"[mqtt] rejected oversized payload on {msg.topic}: "
+            f"{len(msg.payload)} bytes"
+        )
+        _event_journal_record(
+            "mqtt","command_rejected","warning","mqtt",
+            f"oversized command payload on {msg.topic}",
+        )
+        return
     t=msg.topic; p=msg.payload.decode("utf-8","ignore").strip()
     if t.endswith("/maintenance/set"):
         _request_maintenance_mode(p)
@@ -976,15 +1000,23 @@ def _on_disconnect(client,userdata,rc,properties=None):
     print(f"[mqtt] on_disconnect rc={rc}")
     _health_set("mqtt",ComponentState.DEGRADED,f"disconnected rc={rc}")
 
+def _configure_mqtt_security(client):
+    if MQTT_USER:
+        client.username_pw_set(MQTT_USER,MQTT_PASS)
+    if MQTT_TLS:
+        client.tls_set(
+            ca_certs=MQTT_CA_CERT,
+            certfile=MQTT_CERTFILE,
+            keyfile=MQTT_KEYFILE,
+        )
+
 def mqtt_connect():
     if mqttc is None: return
     try:
         mqttc.on_connect=_on_connect; mqttc.on_disconnect=_on_disconnect; mqttc.on_message=_on_message
         try: mqttc.will_set(f"{MQTT_BASE}/availability","offline",retain=True)
         except Exception: pass
-        if MQTT_USER:
-            try: mqttc.username_pw_set(MQTT_USER,MQTT_PASS)
-            except Exception: pass
+        _configure_mqtt_security(mqttc)
         mqttc.connect(MQTT_HOST,MQTT_PORT,keepalive=60); mqttc.loop_start()
         for _ in range(30): time.sleep(0.05)
     except Exception as e: print("[mqtt connect]",e)
@@ -2574,7 +2606,11 @@ def _apply_personality_globals(pack):
     AFTERNOON_LINES=list(pack.opening_lines["afternoon"])
     EVENING_LINES=list(pack.opening_lines["evening"])
     NIGHT_LINES=list(pack.opening_lines["night"])
-    GOODBYE_LINES=list(pack.goodbye_lines)
+    GOODBYE_LINES=list(dict.fromkeys(
+        line
+        for period in ("morning","afternoon","evening","night")
+        for line in pack.goodbye_lines_for(period)
+    ))
     IDLE_LINES=list(pack.idle_lines)
     LLM_FALLBACK_LINE=pack.fallback_line
     LLM_MEMORY_TURNS=pack.reply.memory_turns
@@ -3726,7 +3762,12 @@ def _runtime_state_changed(state):
 
 def _say_goodbye():
     if _maintenance_stop_requested(): return None
-    gb=_pick_fresh("goodbye",GOODBYE_LINES) if GOODBYE_LINES else "Goodbye."
+    lines=(
+        _personality_active.goodbye_lines_for(_current_daypart())
+        if _personality_active is not None
+        else GOODBYE_LINES
+    )
+    gb=_pick_fresh("goodbye",lines) if lines else "Goodbye."
     _transcript_add("assistant",gb)
     controller.set_state(RuntimeState.SPEAKING)
     return speak_with_jaw(gb)
@@ -3749,7 +3790,12 @@ def _conversation_loop(memory):
         )
         if foreground_stop.is_set(): return
         if not text:
-            _say_goodbye(); return
+            # A motion-only visit already received its opening line. Adding a
+            # farewell here made false PIR triggers and missed microphone
+            # input sound like a stream of goodbyes.
+            if _transcript_has_interaction():
+                _say_goodbye()
+            return
         _transcript_add("user",text)
         if EXIT_RE.search(text):
             _say_goodbye(); return

@@ -1,4 +1,6 @@
 import unittest
+import threading
+from types import SimpleNamespace
 from unittest import mock
 
 import skeleton_all_in_one_mqtt as runtime
@@ -38,6 +40,42 @@ class EmptyVisitBackoffTests(unittest.TestCase):
             self.assertEqual(runtime._effective_cooldown(), 300.0)
             runtime._note_visit_result(True)
             self.assertEqual(runtime._effective_cooldown(), 30.0)
+
+
+class ConversationEndingTests(unittest.TestCase):
+    def _controller(self):
+        return SimpleNamespace(
+            stop_event=threading.Event(),
+            maintenance_interrupt_event=threading.Event(),
+            set_state=mock.Mock(),
+            heartbeat=mock.Mock(),
+        )
+
+    def test_empty_visit_ends_without_a_goodbye(self):
+        goodbye = mock.Mock()
+        with mock.patch.multiple(
+            runtime,
+            controller=self._controller(),
+            record_once=mock.Mock(return_value=""),
+            _transcript_has_interaction=mock.Mock(return_value=False),
+            _say_goodbye=goodbye,
+        ):
+            runtime._conversation_loop(mock.Mock())
+
+        goodbye.assert_not_called()
+
+    def test_timeout_after_real_interaction_says_goodbye(self):
+        goodbye = mock.Mock()
+        with mock.patch.multiple(
+            runtime,
+            controller=self._controller(),
+            record_once=mock.Mock(return_value=""),
+            _transcript_has_interaction=mock.Mock(return_value=True),
+            _say_goodbye=goodbye,
+        ):
+            runtime._conversation_loop(mock.Mock())
+
+        goodbye.assert_called_once_with()
 
 
 class LinePickingTests(unittest.TestCase):

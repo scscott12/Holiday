@@ -202,6 +202,10 @@ Environment="MQTT_HOST=<broker-ip>"
 Environment="MQTT_PORT=1883"
 Environment="MQTT_USER=<username>"
 Environment="MQTT_PASS=Your!Password"   # keep quotes if it contains !
+## Optional verified TLS; use the broker's TLS listener.
+# Environment="MQTT_TLS=1"
+# Environment="MQTT_PORT=8883"
+# Environment="MQTT_CA_CERT=/etc/ssl/certs/ca-certificates.crt"
 Environment="EYES_INVERT=0"
 Environment="EYES_LISTEN_FRAC=0.18"
 Environment="EYES_SPEAK_FRAC=1.0"
@@ -265,6 +269,12 @@ Environment="LLM_PHRASE_MAX_CHARS=72"
 Environment="LLM_MEMORY_TURNS=3"
 Environment="LLM_CONTEXT_TOKENS=512"
 ```
+
+The broker account authorizes every Home Assistant command, including speech
+and actuator actions. Limit it to the skeleton's own topic tree and discovery
+topics. `MQTT_TLS=1` enables certificate verification; optional client
+certificates use `MQTT_CERTFILE` and `MQTT_KEYFILE`. Do not expose plain MQTT
+port 1883 to the internet.
 
 Speech timing is split into three controls:
 
