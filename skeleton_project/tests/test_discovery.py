@@ -4,6 +4,22 @@ from holiday_skeleton.discovery import discovery_messages
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_device_page_separates_primary_config_and_diagnostic_entities(self):
+        messages = dict(discovery_messages("skeleton"))
+
+        self.assertNotIn(
+            "entity_category",
+            messages["homeassistant/binary_sensor/skeleton/ready/config"],
+        )
+        self.assertEqual(
+            messages["homeassistant/number/skeleton/volume/config"]["entity_category"],
+            "config",
+        )
+        self.assertEqual(
+            messages["homeassistant/sensor/skeleton/watchdog_state/config"]["entity_category"],
+            "diagnostic",
+        )
+
     def test_say_is_a_text_entity_and_legacy_button_is_removed(self):
         messages = dict(discovery_messages("skeleton"))
 

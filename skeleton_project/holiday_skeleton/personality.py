@@ -134,7 +134,7 @@ class PersonalityPack:
     description: str
     system_prompt: str
     opening_lines: Mapping[str, tuple[str, ...]]
-    goodbye_lines: tuple[str, ...]
+    goodbye_lines: Mapping[str, tuple[str, ...]]
     idle_lines: tuple[str, ...]
     fallback_line: str
     reply: ReplySettings
@@ -148,11 +148,16 @@ class PersonalityPack:
             line
             for group in (
                 *(self.opening_lines[period] for period in _PERIODS),
-                self.goodbye_lines,
+                *(self.goodbye_lines[period] for period in _PERIODS),
                 self.idle_lines,
             )
             for line in group
         ))
+
+    def goodbye_lines_for(self, period: str) -> tuple[str, ...]:
+        """Return the configured farewells for one daypart."""
+
+        return self.goodbye_lines[period]
 
     def metadata(self) -> dict[str, Any]:
         return {
@@ -187,6 +192,31 @@ def _parse_pack(name: str, raw: Any) -> PersonalityPack:
         period: _lines(opening.get(period), f"{name}.opening_lines.{period}")
         for period in _PERIODS
     }
+
+    goodbye = raw.get("goodbye_lines")
+    if isinstance(goodbye, list):
+        # Version 1 packs used one shared pool. Keep them valid while allowing
+        # newer packs to restore daypart-specific farewells.
+        shared_goodbyes = _lines(goodbye, f"{name}.goodbye_lines")
+        goodbye_lines = {period: shared_goodbyes for period in _PERIODS}
+    elif isinstance(goodbye, Mapping):
+        extra_periods = set(goodbye) - set(_PERIODS)
+        if extra_periods:
+            raise PersonalityConfigError(
+                f"{name}.goodbye_lines has unknown periods: "
+                f"{', '.join(sorted(extra_periods))}"
+            )
+        goodbye_lines = {
+            period: _lines(
+                goodbye.get(period),
+                f"{name}.goodbye_lines.{period}",
+            )
+            for period in _PERIODS
+        }
+    else:
+        raise PersonalityConfigError(
+            f"{name}.goodbye_lines must be a non-empty list or daypart object"
+        )
 
     reply_raw = raw.get("reply", {})
     if not isinstance(reply_raw, Mapping):
@@ -244,7 +274,7 @@ def _parse_pack(name: str, raw: Any) -> PersonalityPack:
         description=_text(raw.get("description", ""), f"{name}.description", 240, required=False),
         system_prompt=_text(raw.get("system_prompt"), f"{name}.system_prompt", 1600),
         opening_lines=MappingProxyType(opening_lines),
-        goodbye_lines=_lines(raw.get("goodbye_lines"), f"{name}.goodbye_lines"),
+        goodbye_lines=MappingProxyType(goodbye_lines),
         idle_lines=_lines(raw.get("idle_lines"), f"{name}.idle_lines"),
         fallback_line=_text(raw.get("fallback_line", "Say that again."), f"{name}.fallback_line", 300),
         reply=reply,

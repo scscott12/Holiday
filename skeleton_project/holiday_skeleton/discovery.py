@@ -14,6 +14,55 @@ from holiday_skeleton.calibration import CALIBRATION_STEPS
 DiscoveryMessage = Tuple[str, Optional[Dict[str, Any]]]
 
 
+CONFIGURATION_ENTITIES = {
+    "calibration_step_select",
+    "calibration_jaw_rest",
+    "calibration_jaw_max",
+    "calibration_eyes_inverted",
+    "calibration_eyes_dim",
+    "calibration_eyes_full",
+    "calibration_microphone_gate",
+    "calibration_speaker_volume",
+    "calibration_pir_hold",
+    "calibration_pir_cooldown",
+    "calibration_start",
+    "calibration_preview",
+    "calibration_next",
+    "calibration_save",
+    "calibration_cancel",
+    "eyes_dim",
+    "eyes_full",
+    "volume",
+    "motion_enabled",
+    "idle_life_enabled",
+    "night_mode",
+    "maintenance_mode",
+    "personality",
+    "content_reload",
+    "restart",
+}
+
+PRIMARY_ENTITIES = {
+    "motion",
+    "speaking",
+    "ready",
+    "health_ok",
+    "status",
+    "scene_active",
+    "scene_current",
+    "transcript",
+    "say",
+    "scene_play",
+    "scene_stop",
+    "personality_default_scene",
+    "self_test_run",
+    "self_test_stop",
+    "blink",
+    "flicker",
+    "motion_trigger",
+}
+
+
 def discovery_messages(
     device_name: str,
     personality_names: Iterable[str] = (),
@@ -33,6 +82,10 @@ def discovery_messages(
     messages: List[DiscoveryMessage] = []
 
     def add(component: str, key: str, payload: Dict[str, Any]) -> None:
+        if key in CONFIGURATION_ENTITIES:
+            payload.setdefault("entity_category", "config")
+        elif key not in PRIMARY_ENTITIES:
+            payload.setdefault("entity_category", "diagnostic")
         payload["avty_t"] = f"{base}/availability"
         payload["dev"] = device
         messages.append(

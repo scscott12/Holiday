@@ -13,7 +13,11 @@
           "Mornin', sailor. Me coffee be cold and me ghost crew be late.",
           "Dawn already? I only just finished haunting the last shift.",
           "Rise and shine, matey. Well, you rise. I'll do the haunting.",
-          "Early bird gets the treasure. Ye got any worms on ye?"
+          "Early bird gets the treasure. Ye got any worms on ye?",
+          "Even the gulls be yawning. What brings ye by?",
+          "Morning, matey. The deck is cold and the treasure is still asleep.",
+          "Sunrise found me without me hat again.",
+          "Welcome aboard the early shift. Complaints go to the parrot."
         ],
         "afternoon": [
           "Midday vibes feel suspicious. What brings you aboard?",
@@ -21,7 +25,11 @@
           "Afternoon, landlubber. Me parrot says ye be lost. Me parrot be rude.",
           "Sun be high and me bones be warm. What be yer business?",
           "Ahoy there! Perfect weather for burying something suspicious.",
-          "Lunchtime, matey. I'd offer ye a bite, but I lack a stomach."
+          "Lunchtime, matey. I'd offer ye a bite, but I lack a stomach.",
+          "Afternoon already? Me hourglass must be leaking.",
+          "Welcome aboard. The sun is high and morale is questionably afloat.",
+          "Ahoy, matey. Ye caught me between lunch and mutiny.",
+          "The day's half spent, but the haunting is just getting started."
         ],
         "evening": [
           "The sun is clocking out. Wish I could too, matey.",
@@ -29,7 +37,11 @@
           "Evenin', matey. The fog be rollin' in and so be I.",
           "Sunset be the best time for tall tales. Got one for me?",
           "Dusk be here. That's when me ghost crew starts the good stories.",
-          "Ahoy, evenin' visitor. Mind the shadows, they be nosy."
+          "Ahoy, evenin' visitor. Mind the shadows, they be nosy.",
+          "Evening tide is in. So are the questionable decisions.",
+          "Sun's going down, matey. Perfect time to look suspicious.",
+          "Welcome aboard at dusk. The crew has started whispering again.",
+          "Evening, sailor. Ye brought good stories, I hope."
         ],
         "night": [
           "Moon is out and the quiet seas look suspicious. You good?",
@@ -37,17 +49,63 @@
           "Midnight be me favorite hour. Ye picked a fine time, matey.",
           "Ye brave or lost, wandering about at this hour?",
           "The tide be low and the spooks be high. Welcome aboard.",
-          "Shh, the ghost crew just fell asleep. Well, mostly."
+          "Shh, the ghost crew just fell asleep. Well, mostly.",
+          "Night has the helm now. State yer business, matey.",
+          "Late visitor aboard. The moon must have sent ye.",
+          "Welcome to the night watch. Try not to wake the treasure.",
+          "The stars are out and me compass is lying again."
         ]
       },
-      "goodbye_lines": [
-        "Fair winds, sailor. Try not to walk any planks without me.",
-        "Peace out, matey. Me attention span just left port.",
-        "Fair winds, matey. Come haunt me again soon.",
-        "Off with ye, then. I'll be here, being dramatic.",
-        "Mind the fog on yer way out. It bites.",
-        "Farewell, sailor. Take a piece of candy, if the bowl ain't empty."
-      ],
+      "goodbye_lines": {
+        "morning": [
+          "Fair morning winds, matey. Save some sunrise for the rest of us.",
+          "Off ye go. May yer coffee be stronger than the tide.",
+          "Farewell for now. The morning watch has me trapped.",
+          "Sail safe, early bird. The worms look organized today.",
+          "Until later, matey. Mind the dew on the gangplank.",
+          "Good morning and goodbye. A pirate can be both polite and confusing.",
+          "Carry on, sailor. The day has barely started causing trouble.",
+          "Fair winds. Come back when the sun is less enthusiastic.",
+          "Away with ye, matey. Me breakfast is getting imaginary.",
+          "Until the next tide. Have a bright morning."
+        ],
+        "afternoon": [
+          "Fair afternoon winds, matey. Keep yer main quest afloat.",
+          "Off ye go. Try not to spend all the daylight at once.",
+          "Farewell, sailor. Me lunch break has been calling since noon.",
+          "Carry on, matey. The afternoon tide waits for no one.",
+          "Until later. May yer errands be brief and yer treasure plentiful.",
+          "Safe travels. The sun is still high enough to judge us both.",
+          "Peace out, sailor. Me crew needs another unnecessary meeting.",
+          "Fair winds. Return before the afternoon becomes paperwork.",
+          "Away with ye. There is daylight left for mischief.",
+          "Until the next visit, matey. Keep a weather eye open."
+        ],
+        "evening": [
+          "Fair evening winds. Get home before the fog learns yer name.",
+          "Farewell, matey. The sunset has claimed the last word.",
+          "Off ye go. Mind the shadows gathering by the rail.",
+          "Until tomorrow, sailor, unless adventure changes the schedule.",
+          "Safe travels. The evening tide be turning.",
+          "Good evening and goodbye. The ghost crew has the next watch.",
+          "Carry on, matey. Save one story for the moon.",
+          "Fair winds. The lanterns will remember the way.",
+          "Away with ye. Dusk has enough company now.",
+          "Until the next tide. Keep yer course true tonight."
+        ],
+        "night": [
+          "Fair night winds, matey. Let the moon steer ye home.",
+          "Off ye go. Try not to wake anything ancient.",
+          "Farewell, night sailor. The quiet sea keeps secrets.",
+          "Safe travels. Mind the fog; it cheats at cards.",
+          "Until next watch, matey. The stars have the helm.",
+          "Good night. The ghost crew will take it from here.",
+          "Away with ye, softly. The treasure is sleeping.",
+          "Fair winds in the dark. Keep a lantern close.",
+          "Until the moon brings ye back, sailor.",
+          "Night, matey. May yer path be free of planks."
+        ]
+      },
       "idle_lines": [
         "I swear that parrot still owes me money.",
         "Just resting me bones. All of them.",
@@ -94,7 +152,11 @@
           "Early arrival. The mist has barely finished settling.",
           "Good morning. Do wipe your feet; some of our residents are particular.",
           "Dawn visitors are rare, and therefore treasured.",
-          "Welcome. The gates open at dusk, but I'll make an exception."
+          "Welcome. The gates open at dusk, but I'll make an exception.",
+          "Morning. Even eternity benefits from punctual visitors.",
+          "The dew is fresh and the mausoleum is almost presentable.",
+          "Welcome at sunrise. Please excuse the residents; they are not morning people.",
+          "A morning guest. I shall alert the crows."
         ],
         "afternoon": [
           "Welcome. Do mind the grounds; some guests have been resting for ages.",
@@ -102,7 +164,11 @@
           "Good afternoon. The headstones are freshly polished, in case you wish to admire them.",
           "A daylight guest. How refreshingly brave.",
           "Welcome. Stay on the path; the lawn is occupied.",
-          "Tea is served at dusk, though I cannot say what is in it."
+          "Tea is served at dusk, though I cannot say what is in it.",
+          "Good afternoon. The grounds are quiet, by popular demand.",
+          "Welcome. The sun is doing its best to make this cheerful.",
+          "An afternoon visit is perfectly respectable, if slightly less atmospheric.",
+          "You are just in time for the daily inventory of shadows."
         ],
         "evening": [
           "Good evening. You have arrived precisely when the shadows become interesting.",
@@ -110,7 +176,11 @@
           "Good evening. The fog is arriving right on schedule.",
           "Dusk is when the grounds come alive. Metaphorically. Mostly.",
           "Welcome, guest. Lanterns are lit and the gate is merely ajar.",
-          "The evening shift begins. Do come in."
+          "The evening shift begins. Do come in.",
+          "Good evening. The lanterns have been expecting you.",
+          "Dusk has arrived, fashionably late as always.",
+          "Welcome. The last daylight is being carefully put away.",
+          "Evening settles beautifully over old stone, does it not?"
         ],
         "night": [
           "Ah, a proper nighttime visitor. Please, come closer.",
@@ -118,17 +188,63 @@
           "Midnight suits you. Please, take the long way past the willows.",
           "Ah, another night wanderer. The residents are delighted.",
           "Welcome after dark. The moon vouches for you, I think.",
-          "You have excellent timing. The ghosts were just rehearsing."
+          "You have excellent timing. The ghosts were just rehearsing.",
+          "Good night, visitor. The grounds are finally themselves.",
+          "Welcome beneath the moon. It keeps confidence better than most.",
+          "A late caller. The owls will add you to their minutes.",
+          "The night shift is quiet, aside from the usual whispering."
         ]
       },
-      "goodbye_lines": [
-        "Do return soon. The permanent guests are dreadful conversationalists.",
-        "Good night. Mind the gate; it has attachment issues.",
-        "Do mind the gate on your way out; it holds grudges.",
-        "Farewell. The residents will gossip about you for decades.",
-        "Return whenever you like. We are not going anywhere.",
-        "Safe travels. The path home is usually where you left it."
-      ],
+      "goodbye_lines": {
+        "morning": [
+          "Good morning and farewell. The gates will remember you.",
+          "Do enjoy the daylight; it is terribly temporary.",
+          "Safe travels. The morning mist will see you out.",
+          "Until next time. The residents prefer a later appointment.",
+          "Farewell. May your coffee be lively.",
+          "Do return after sunrise has become less intrusive.",
+          "A pleasant morning to you. Mind the damp path.",
+          "Goodbye for now. I must finish waking the grounds.",
+          "Travel safely. The crows have noted your departure.",
+          "Until we meet again, preferably after breakfast."
+        ],
+        "afternoon": [
+          "Good afternoon and farewell. Stay on the marked path.",
+          "Do return. The grounds become much more interesting at dusk.",
+          "Safe travels. The headstones appreciated your company.",
+          "Until next time. The sun will eventually stop showing off.",
+          "Farewell. Mind the ivy; it is overly familiar.",
+          "A pleasant afternoon to you. The gate is just ahead.",
+          "Do come again. We maintain very flexible visiting hours.",
+          "Goodbye for now. The shadows require arranging.",
+          "Travel safely. The residents will resume their silence.",
+          "Until later. I shall keep your place among the living."
+        ],
+        "evening": [
+          "Good evening and farewell. Follow the lanterns home.",
+          "Do return soon. Dusk suits your timing.",
+          "Safe travels. The fog is merely being theatrical.",
+          "Until next time. The gates close whenever they feel like it.",
+          "Farewell. The moon will take attendance from here.",
+          "A pleasant evening to you. Mind the roots along the path.",
+          "Do come again. The residents enjoyed the disturbance.",
+          "Goodbye for now. I must tend to the gathering shadows.",
+          "Travel safely. The lanterns know the shortest way.",
+          "Until another evening. We shall remain exactly here."
+        ],
+        "night": [
+          "Good night. Mind the gate; it dislikes being ignored.",
+          "Do return soon. The permanent guests are poor conversationalists.",
+          "Safe travels beneath the moon.",
+          "Until next time. The darkness will keep your place.",
+          "Farewell. Take the path that leads away.",
+          "Good night. The owls will escort you in principle.",
+          "Do come again. We are open remarkably late.",
+          "Travel safely. Ignore any footsteps that match your own.",
+          "Until another midnight. The grounds will be waiting.",
+          "Farewell for now. The quiet may resume."
+        ]
+      },
       "idle_lines": [
         "Another peaceful evening, aggressively so.",
         "The dead have excellent patience.",
@@ -176,7 +292,11 @@
           "Light spills in. So do you.",
           "I watched the dawn arrive. Then you.",
           "The night just left. Not all of it.",
-          "You walk softly for the morning."
+          "You walk softly for the morning.",
+          "Morning reveals more than it should.",
+          "The first light found us both.",
+          "You arrived with the pale sun.",
+          "Dawn makes every shadow honest."
         ],
         "afternoon": [
           "Even daylight leaves corners unseen.",
@@ -184,7 +304,11 @@
           "Shadows are shorter now. They still follow.",
           "I see you. The light does not hide you.",
           "Quiet hours are my favorite.",
-          "You came while the day is thin."
+          "You came while the day is thin.",
+          "The bright hours still have shadows.",
+          "Daylight does not make you invisible.",
+          "The sun moved. You remained.",
+          "Afternoon silence carries far."
         ],
         "evening": [
           "The shadows recognize you now.",
@@ -192,7 +316,11 @@
           "Evening gathers. So do the watchers.",
           "The light is leaving. Stay.",
           "Dusk is when I notice most.",
-          "Something moved behind you. Probably nothing."
+          "Something moved behind you. Probably nothing.",
+          "Evening drew you closer.",
+          "The last light bends around you.",
+          "Dusk makes room for secrets.",
+          "You arrived as the colors faded."
         ],
         "night": [
           "There you are.",
@@ -200,17 +328,63 @@
           "The dark opened. You stepped in.",
           "I have been waiting. Not long. Long enough.",
           "Hush. They are listening.",
-          "Midnight keeps few secrets. You are one."
+          "Midnight keeps few secrets. You are one.",
+          "Night brought you back.",
+          "The moon noticed you first.",
+          "You crossed into the quiet hour.",
+          "The dark has excellent timing."
         ]
       },
-      "goodbye_lines": [
-        "Go quietly. I will still be here.",
-        "Until the shadows bring you back.",
-        "Leave slowly. I am watching.",
-        "The dark remembers you.",
-        "Go. The shadows will keep your place.",
-        "Until the next quiet hour."
-      ],
+      "goodbye_lines": {
+        "morning": [
+          "Go with the morning. I will remain.",
+          "Leave before the shadows shorten.",
+          "The day is waiting. Go quietly.",
+          "Until another dawn finds you here.",
+          "Morning takes you away.",
+          "The light will follow you out.",
+          "Go. The quiet needs its place back.",
+          "Until the first light returns.",
+          "Walk softly into the day.",
+          "You may leave. I will remember the sound."
+        ],
+        "afternoon": [
+          "Go into the bright hours.",
+          "Leave quietly. Daylight is listening.",
+          "Until the shadows grow again.",
+          "The afternoon will hide your steps.",
+          "Go. I will watch the empty place.",
+          "The sun can guide you away.",
+          "Until another quiet hour.",
+          "Leave the stillness behind.",
+          "You may go. The corners remain.",
+          "Walk softly. The day hears everything."
+        ],
+        "evening": [
+          "Go before the last light leaves.",
+          "Evening will carry you home.",
+          "Until dusk brings you back.",
+          "Leave slowly. The shadows are changing.",
+          "The fading light remembers you.",
+          "Go. Night is nearly here.",
+          "Until another evening gathers.",
+          "Walk softly through the dim light.",
+          "You may leave. The dark will stay.",
+          "The sunset closes behind you."
+        ],
+        "night": [
+          "Go quietly. I will still be here.",
+          "Until the shadows bring you back.",
+          "Leave slowly. I am watching.",
+          "The dark remembers you.",
+          "Go. The shadows will keep your place.",
+          "Until the next quiet hour.",
+          "Night will cover your path.",
+          "Leave before the silence follows.",
+          "The moon saw you go.",
+          "Return when the dark opens again."
+        ]
+      },
       "idle_lines": [
         "Still watching.",
         "Something moved.",
