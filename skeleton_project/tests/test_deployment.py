@@ -498,6 +498,103 @@ class DeploymentTests(unittest.TestCase):
         record = json.loads(deployer.paths.record.read_text(encoding="utf-8"))
         self.assertEqual(record["status"], "active")
 
+    def test_failed_health_check_rolls_back_to_previous_versioned_release(self):
+        old = self._old_versioned_install()
+        systemd = FakeSystemd(start_failures=[True, False])
+        deployer = self._deployer(systemd)
+
+        with self.assertRaisesRegex(DeploymentError, "rolled back successfully"):
+            deployer.deploy("failing-release")
+
+        # current is restored to the previous versioned release.
+        self.assertEqual((self.prefix / "current").resolve(), old.resolve())
+        self._assert_legacy_metadata()
+        # Deploy failed: no active record, but the candidate release is kept
+        # in place (it is not removed during a rollback transaction).
+        self.assertFalse(deployer.paths.record.exists())
+        self.assertTrue((self.prefix / "releases" / "failing-release").exists())
+        self.assertEqual(
+            systemd.events,
+            [
+                "stop",
+                "daemon-reload",
+                "start-and-verify",
+                "stop",
+                "daemon-reload",
+                "start-and-verify",
+            ],
+        )
+
+    def test_rollback_failure_reports_both_deploy_and_rollback_errors(self):
+        old = self._old_versioned_install()
+        systemd = FakeSystemd()
+        deployer = self._deployer(systemd)
+        # The backup is created and the candidate is switched in, but
+        # restoring the prior release raises. The deploy must report both
+        # the original activation failure and the failed rollback.
+        deployer._restore_backup = lambda backup: (_ for _ in ()).throw(
+            DeploymentError("snapshot restore failed")
+        )
+        deployer._switch_current = lambda release: (_ for _ in ()).throw(
+            DeploymentError("simulated activation failure")
+        )
+
+        with self.assertRaisesRegex(
+            DeploymentError,
+            r"deployment failed: simulated activation failure; "
+            r"automatic rollback also failed: candidate is stopped but the prior "
+            r"release could not be restored: simulated activation failure",
+        ):
+            deployer.deploy("rollback-fails")
+
+        self.assertEqual((self.prefix / "current").resolve(), old.resolve())
+        self.assertFalse(deployer.paths.record.exists())
+
+    def test_rollback_last_without_a_record_refuses_to_rollback(self):
+        self._legacy_install()
+        with self.assertRaisesRegex(DeploymentError, "cannot read last deployment record"):
+            self._deployer().rollback_last()
+
+    def test_rollback_last_restores_state_changed_after_the_deploy(self):
+        self._legacy_install()
+        systemd = FakeSystemd()
+        deployer = self._deployer(systemd)
+        result = deployer.deploy("changed-after")
+        (self.state / "operator-settings.json").write_text(
+            "changed", encoding="utf-8"
+        )
+
+        rolled_back = deployer.rollback_last()
+
+        self.assertTrue(rolled_back.rolled_back)
+        self.assertEqual(rolled_back.backup_path, result.backup_path)
+        self.assertEqual(
+            (self.state / "operator-settings.json").read_text(encoding="utf-8"),
+            '{"version": 3}\n',
+        )
+        record = json.loads(deployer.paths.record.read_text(encoding="utf-8"))
+        self.assertEqual(record["status"], "rolled_back")
+        self.assertIn("rolled_back_at", record)
+
+    def test_rollback_last_restores_metadata_for_a_file_that_was_removed(self):
+        self._legacy_install()
+        deployer = self._deployer(FakeSystemd())
+        deployer.deploy("metadata-rollback")
+        (self.state / "operator-settings.json").unlink()
+
+        rolled_back = deployer.rollback_last()
+        self.assertTrue(rolled_back.rolled_back)
+        self.assertEqual(
+            (self.state / "operator-settings.json").read_text(encoding="utf-8"),
+            '{"version": 3}\n',
+        )
+        self.assertEqual(
+            self._mode(self.state / "operator-settings.json"), 0o600
+        )
+        self.assertEqual(
+            self._mode(self.state / "diagnostic-events.json"), 0o640
+        )
+
     def test_current_link_outside_managed_releases_is_rejected(self):
         self.prefix.mkdir(parents=True)
         outside = self.root / "outside"
