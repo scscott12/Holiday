@@ -1,5 +1,7 @@
 adafruit-circuitpython-pca9685
 adafruit-circuitpython-motor
+Adafruit-Blinka-Raspberry-Pi-PWM>=1.0.2
+gpiod>=2.2.2,<3
 gpiozero
 vosk
 sounddevice
