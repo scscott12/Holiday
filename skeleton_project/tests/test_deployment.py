@@ -80,6 +80,7 @@ class DeploymentTests(unittest.TestCase):
 
     def _make_source(self):
         (self.source / "holiday_skeleton").mkdir(parents=True)
+        (self.source / "ha").mkdir()
         (self.source / "systemd").mkdir()
         (self.source / "holiday_skeleton" / "__init__.py").write_text(
             '"""test package"""\n', encoding="utf-8"
@@ -93,6 +94,9 @@ class DeploymentTests(unittest.TestCase):
         )
         (self.source / "scenes.json").write_text(
             '{"scenes": []}\n', encoding="utf-8"
+        )
+        (self.source / "ha" / "lovelace_dashboard.yaml").write_text(
+            "title: Skeleton\nviews: []\n", encoding="utf-8"
         )
         (self.source / "systemd" / "holiday-skeleton.service").write_text(
             "[Service]\n"
@@ -278,6 +282,12 @@ class DeploymentTests(unittest.TestCase):
             (result.release_path / "release-manifest.json").read_text(encoding="utf-8")
         )
         self.assertEqual(manifest["release_id"], "v19-test")
+        self.assertEqual(
+            (result.release_path / "ha" / "lovelace_dashboard.yaml").read_text(
+                encoding="utf-8"
+            ),
+            "title: Skeleton\nviews: []\n",
+        )
         self.assertEqual(manifest["files"]["venv/bin/python"]["type"], "symlink")
         self.assertEqual(systemd.events, ["stop", "daemon-reload", "start-and-verify"])
         record = json.loads(deployer.paths.record.read_text())

@@ -27,6 +27,7 @@ RELEASE_FILES = (
     "requirements.txt",
     "personalities.json",
     "scenes.json",
+    "ha",
     "holiday_skeleton",
     "systemd",
 )
