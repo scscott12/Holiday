@@ -8,9 +8,10 @@ import re
 import threading
 import time
 from collections import deque
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Any, Callable, Iterable, Optional
+from typing import Any
 
 import numpy as np
 
@@ -119,7 +120,7 @@ class BargeInMatcher:
 
         return tuple(self._commands) + ("[unk]",)
 
-    def match(self, transcript: str, expected_speech: str = "") -> Optional[BargeInMatch]:
+    def match(self, transcript: str, expected_speech: str = "") -> BargeInMatch | None:
         candidate = _normalize(transcript)
         action = self._commands.get(candidate)
         if action is None:
@@ -148,10 +149,10 @@ class BargeInDetector:
         self.started_at = clock()
         self._candidate = ""
         self._confirmations = 0
-        self._result: Optional[BargeInMatch] = None
+        self._result: BargeInMatch | None = None
 
     @property
-    def result(self) -> Optional[BargeInMatch]:
+    def result(self) -> BargeInMatch | None:
         return self._result
 
     def inspect(
@@ -159,7 +160,7 @@ class BargeInDetector:
         transcript: str,
         expected_speech: str = "",
         final: bool = False,
-    ) -> Optional[BargeInMatch]:
+    ) -> BargeInMatch | None:
         if self._result is not None:
             return self._result
 
@@ -210,12 +211,12 @@ class BargeInMonitor:
         recognition_rate: int,
         blocksize: int,
         energy_threshold: float,
-        verification_recognizer_factory: Optional[Callable[[], Any]] = None,
+        verification_recognizer_factory: Callable[[], Any] | None = None,
         minimum_voiced_seconds: float = 0.10,
         preroll_seconds: float = 0.20,
         end_silence_seconds: float = 0.30,
         partial_confirmations: int = 2,
-        parent_stop_event: Optional[threading.Event] = None,
+        parent_stop_event: threading.Event | None = None,
         corroboration_seconds: float = 1.25,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -241,12 +242,12 @@ class BargeInMonitor:
         self._expected_lock = threading.Lock()
         self._expected_speech: deque[str] = deque(maxlen=8)
         self._result_lock = threading.Lock()
-        self._result: Optional[BargeInMatch] = None
-        self.error: Optional[str] = None
-        self._thread: Optional[threading.Thread] = None
+        self._result: BargeInMatch | None = None
+        self.error: str | None = None
+        self._thread: threading.Thread | None = None
 
     @property
-    def result(self) -> Optional[BargeInMatch]:
+    def result(self) -> BargeInMatch | None:
         with self._result_lock:
             return self._result
 
@@ -303,7 +304,7 @@ class BargeInMonitor:
             clock=self.clock,
         )
         verification_history: deque[tuple[float, str]] = deque()
-        pending_match: Optional[BargeInMatch] = None
+        pending_match: BargeInMatch | None = None
         pending_deadline = 0.0
 
         def callback(indata: Any, frames: int, time_info: Any, status: Any) -> None:
@@ -413,7 +414,7 @@ class BargeInMonitor:
         except Exception as error:
             self.error = str(error)
 
-    def start(self) -> "BargeInMonitor":
+    def start(self) -> BargeInMonitor:
         if self._thread is not None:
             return self
         self._thread = threading.Thread(
@@ -424,7 +425,7 @@ class BargeInMonitor:
         self._thread.start()
         return self
 
-    def stop(self, timeout: float = 1.0) -> Optional[BargeInMatch]:
+    def stop(self, timeout: float = 1.0) -> BargeInMatch | None:
         self._monitor_stop.set()
         if self._thread is not None:
             self._thread.join(timeout=max(0.0, float(timeout)))
