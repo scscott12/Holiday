@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Optional, Sequence
+from typing import Any
 
 import numpy as np
 
@@ -67,7 +68,7 @@ def split_pcm16_frames(
     """Split interleaved signed 16-bit PCM into frame-aligned blocks."""
 
     bytes_per_sample_frame = 2 * channels
-    samples_per_frame = max(1, int(round(sample_rate * frame_ms / 1000.0)))
+    samples_per_frame = max(1, round(sample_rate * frame_ms / 1000.0))
     bytes_per_frame = samples_per_frame * bytes_per_sample_frame
     usable = len(pcm) - (len(pcm) % bytes_per_sample_frame)
     return [pcm[pos : min(pos + bytes_per_frame, usable)] for pos in range(0, usable, bytes_per_frame)]
@@ -130,7 +131,7 @@ class PiperSpeechEngine:
         rest_fraction: float,
         maximum_fraction: float,
         output_device: Any = None,
-        output_sample_rate: Optional[int] = None,
+        output_sample_rate: int | None = None,
         output_channels: int = 1,
         frame_ms: float = 20.0,
         clock: Callable[[], float] = time.monotonic,
@@ -175,12 +176,12 @@ class PiperSpeechEngine:
         volume_getter: Callable[[], float],
         rest_fraction: float,
         maximum_fraction: float,
-        config_path: Optional[str] = None,
+        config_path: str | None = None,
         output_device: Any = None,
-        output_sample_rate: Optional[int] = None,
+        output_sample_rate: int | None = None,
         output_channels: int = 1,
         frame_ms: float = 20.0,
-    ) -> "PiperSpeechEngine":
+    ) -> PiperSpeechEngine:
         """Load the ONNX voice once, then open the reusable output stream."""
 
         from piper import PiperVoice
@@ -230,7 +231,7 @@ class PiperSpeechEngine:
     def _frames_from_chunk(
         self,
         chunk: Any,
-        resample_state: Optional[dict] = None,
+        resample_state: dict | None = None,
     ) -> tuple[list[bytes], np.ndarray]:
         if int(chunk.sample_width) != 2:
             raise ValueError(f"unsupported Piper sample width: {chunk.sample_width}")
@@ -309,8 +310,8 @@ class PiperSpeechEngine:
     def cache_phrases(
         self,
         phrases: Iterable[str],
-        stop_event: Optional[threading.Event] = None,
-        progress: Optional[Callable[[], None]] = None,
+        stop_event: threading.Event | None = None,
+        progress: Callable[[], None] | None = None,
     ) -> SpeechCacheMetrics:
         """Pre-render unique canned lines without writing anything to the speaker.
 
@@ -382,8 +383,8 @@ class PiperSpeechEngine:
     def speak(
         self,
         text: str,
-        stop_event: Optional[threading.Event] = None,
-        first_audio: Optional[Callable[[float], None]] = None,
+        stop_event: threading.Event | None = None,
+        first_audio: Callable[[float], None] | None = None,
     ) -> SpeechMetrics:
         """Synthesize and play text without a temporary WAV file."""
 
@@ -399,9 +400,9 @@ class PiperSpeechEngine:
     def speak_phrases(
         self,
         phrases: Iterable[str],
-        stop_event: Optional[threading.Event] = None,
-        first_audio: Optional[Callable[[float], None]] = None,
-        phrase_started: Optional[Callable[[str], None]] = None,
+        stop_event: threading.Event | None = None,
+        first_audio: Callable[[float], None] | None = None,
+        phrase_started: Callable[[str], None] | None = None,
     ) -> SpeechMetrics:
         """Play phrases as they arrive while keeping one output stream open.
 
@@ -501,10 +502,10 @@ class PiperSpeechEngine:
     def play_pcm16(
         self,
         pcm: bytes,
-        stop_event: Optional[threading.Event] = None,
+        stop_event: threading.Event | None = None,
         animate_jaw: bool = False,
         volume_multiplier: float = 1.0,
-        first_audio: Optional[Callable[[float], None]] = None,
+        first_audio: Callable[[float], None] | None = None,
     ) -> SpeechMetrics:
         """Play a preloaded mono PCM cue through the persistent output stream."""
 

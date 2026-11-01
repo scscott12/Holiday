@@ -8,8 +8,9 @@ import re
 import threading
 import time
 from collections import deque
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Iterator, Optional
+from typing import Any
 
 
 def normalize_ollama_chat_url(url: str) -> str:
@@ -64,7 +65,7 @@ class ConversationMemory:
         self._turns.append(ConversationTurn(user=user, assistant=assistant))
         return True
 
-    def remember_reply(self, user_text: str, result: Optional["ReplyResult"]) -> bool:
+    def remember_reply(self, user_text: str, result: ReplyResult | None) -> bool:
         """Commit only a successful, uninterrupted Ollama response."""
 
         if (
@@ -112,7 +113,7 @@ class ReplyResult:
 
     text: str
     metrics: ReplyMetrics
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class PhraseChunker:
@@ -142,7 +143,7 @@ class PhraseChunker:
     def _clean(text: str) -> str:
         return re.sub(r"\s+", " ", text).strip()
 
-    def _strong_boundary(self) -> Optional[int]:
+    def _strong_boundary(self) -> int | None:
         for index, character in enumerate(self._buffer):
             boundary = index + 1
             if boundary < self.minimum_chars or character not in self._STRONG_END:
@@ -153,7 +154,7 @@ class PhraseChunker:
                 return boundary
         return None
 
-    def _soft_boundary(self) -> Optional[int]:
+    def _soft_boundary(self) -> int | None:
         if len(self._buffer) < self.soft_chars:
             return None
         limit = min(len(self._buffer), self.maximum_chars)
@@ -164,7 +165,7 @@ class PhraseChunker:
         ]
         return candidates[-1] if candidates else None
 
-    def _maximum_boundary(self) -> Optional[int]:
+    def _maximum_boundary(self) -> int | None:
         if len(self._buffer) < self.maximum_chars:
             return None
         boundary = self._buffer.rfind(" ", self.minimum_chars, self.maximum_chars + 1)
@@ -173,13 +174,13 @@ class PhraseChunker:
         boundary = self._buffer.find(" ", self.maximum_chars)
         return boundary if boundary >= 0 else None
 
-    def _next_boundary(self) -> Optional[int]:
+    def _next_boundary(self) -> int | None:
         newline = self._buffer.find("\n", self.minimum_chars)
         if newline >= 0:
             return newline
         return self._strong_boundary() or self._soft_boundary() or self._maximum_boundary()
 
-    def _take(self, boundary: int) -> Optional[str]:
+    def _take(self, boundary: int) -> str | None:
         phrase = self._clean(self._buffer[:boundary])
         self._buffer = self._buffer[boundary:].lstrip()
         return phrase or None
@@ -217,7 +218,7 @@ class StreamingReply(Iterator[str]):
         url: str,
         payload: dict[str, Any],
         timeout: Any,
-        stop_event: Optional[threading.Event],
+        stop_event: threading.Event | None,
         chunker: PhraseChunker,
         clock: Callable[[], float],
         queue_size: int = 8,
@@ -233,7 +234,7 @@ class StreamingReply(Iterator[str]):
         self._queue: queue.Queue[Any] = queue.Queue(maxsize=max(1, queue_size))
         self._cancel_event = threading.Event()
         self._response: Any = None
-        self._result: Optional[ReplyResult] = None
+        self._result: ReplyResult | None = None
         self._thread = threading.Thread(target=self._produce, daemon=True)
         self._thread.start()
 
@@ -260,11 +261,11 @@ class StreamingReply(Iterator[str]):
     def _produce(self) -> None:
         response = None
         pieces: list[str] = []
-        first_token_at: Optional[float] = None
-        first_phrase_at: Optional[float] = None
+        first_token_at: float | None = None
+        first_phrase_at: float | None = None
         chunks_received = 0
         phrases_emitted = 0
-        error: Optional[str] = None
+        error: str | None = None
 
         try:
             if self._stopped():
@@ -347,7 +348,7 @@ class StreamingReply(Iterator[str]):
             except queue.Full:
                 pass
 
-    def __iter__(self) -> "StreamingReply":
+    def __iter__(self) -> StreamingReply:
         return self
 
     def __next__(self) -> str:
@@ -368,7 +369,7 @@ class StreamingReply(Iterator[str]):
             return str(item)
 
     @property
-    def result(self) -> Optional[ReplyResult]:
+    def result(self) -> ReplyResult | None:
         return self._result
 
     def cancel(self) -> None:
@@ -380,7 +381,7 @@ class StreamingReply(Iterator[str]):
             except Exception:
                 pass
 
-    def wait(self, timeout: Optional[float] = None) -> Optional[ReplyResult]:
+    def wait(self, timeout: float | None = None) -> ReplyResult | None:
         self._thread.join(timeout=timeout)
         return self._result
 
@@ -417,8 +418,8 @@ class OllamaStreamingClient:
     def start_reply(
         self,
         prompt: str,
-        stop_event: Optional[threading.Event] = None,
-        history: Optional[Iterable[dict[str, str]]] = None,
+        stop_event: threading.Event | None = None,
+        history: Iterable[dict[str, str]] | None = None,
     ) -> StreamingReply:
         messages: list[dict[str, str]] = []
         if self.system_prompt.strip():
