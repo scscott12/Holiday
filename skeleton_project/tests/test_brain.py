@@ -395,6 +395,31 @@ class OllamaStreamingClientTests(unittest.TestCase):
         self.assertEqual(list(reply), ["Second phrase."])
         self.assertEqual(reply.result.text, "First phrase. Second phrase.")
 
+    def test_streaming_reply_processes_and_returns_chat_replies(self):
+        client = self.make_client([
+            {"message": {"role": "assistant", "content": "Hello "}, "done": False},
+            {"message": {"role": "assistant", "content": "there."}, "done": True},
+        ])
+
+        reply = client.start_reply("What's your name?")
+        phrases = list(reply)
+        result = reply.result
+
+        self.assertEqual(phrases, ["Hello there."])
+        self.assertEqual(result.text, "Hello there.")
+        self.assertIsNone(result.error)
+        self.assertFalse(result.metrics.interrupted)
+        self.assertEqual(result.metrics.chunks_received, 2)
+        self.assertGreaterEqual(result.metrics.first_token_seconds, 0.0)
+        self.assertGreaterEqual(result.metrics.first_phrase_seconds, 0.0)
+        self.assertGreater(result.metrics.total_seconds, 0.0)
+        self.assertTrue(self.response.closed)
+        # The streaming method must retain the live response it streamed from
+        # and have closed it once the chat reply was fully processed; an
+        # implementation that discards the response after producing the result
+        # cannot prove the stream was handled end to end.
+        self.assertIs(reply._response, self.response)
+
     def test_pre_cancelled_reply_does_not_open_http_request(self):
         client = self.make_client([])
         stop_event = threading.Event()

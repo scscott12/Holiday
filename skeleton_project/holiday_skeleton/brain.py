@@ -328,7 +328,10 @@ class StreamingReply(Iterator[str]):
                     response.close()
                 except Exception:
                     pass
-            self._response = None
+                # Keep the live response reachable so its close state can be
+                # observed after the producer thread has ended; the result
+                # below must not discard the response being cleaned up.
+                self._response = response
 
             finished_at = self.clock()
             self._result = ReplyResult(
