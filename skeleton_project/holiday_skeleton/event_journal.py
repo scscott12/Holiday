@@ -15,7 +15,10 @@ from typing import Any, Mapping, Optional
 
 
 JOURNAL_VERSION = 1
-MAX_JOURNAL_BYTES = 256 * 1024
+# A complete 512-event journal (the entry ceiling) encodes to roughly 115 KiB, so
+# this limit makes the byte budget the binding constraint and forces byte-boundary
+# eviction before the entry ceiling can be reached.
+MAX_JOURNAL_BYTES = 64 * 1024
 MAX_DETAIL_CHARS = 240
 MIN_RETAINED_EVENTS = 16
 MAX_RETAINED_EVENTS = 512

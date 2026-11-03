@@ -10,6 +10,9 @@ from holiday_skeleton.event_journal import (
     EventJournal,
     EventJournalError,
     MAX_DETAIL_CHARS,
+    MAX_JOURNAL_BYTES,
+    MAX_RETAINED_EVENTS,
+    MIN_RETAINED_EVENTS,
     sanitize_detail,
 )
 
@@ -135,6 +138,38 @@ class EventJournalTests(unittest.TestCase):
             payload["events"], [event.to_payload() for event in snapshot.events]
         )
         self.assertEqual(EventJournal(self.path, maximum_entries=16).load(), snapshot)
+
+    def test_persisted_file_never_exceeds_byte_limit(self):
+        # A count-based cap never exercises byte eviction: a 512-event journal
+        # encodes well under MAX_JOURNAL_BYTES. Force many wide-detail events so
+        # the byte budget becomes the binding constraint, and assert that every
+        # persisted write stays within the byte limit while eviction still drops
+        # only the oldest events.
+        journal = EventJournal(self.path, maximum_entries=MAX_RETAINED_EVENTS)
+        journal.start_session()
+        for index in range(MAX_RETAINED_EVENTS):
+            journal.record(
+                "health",
+                "state_changed",
+                "info",
+                "monitor",
+                "A" * MAX_DETAIL_CHARS,
+            )
+
+        snapshot = journal.snapshot()
+
+        persisted = self.path.read_bytes()
+        self.assertLessEqual(len(persisted), MAX_JOURNAL_BYTES)
+        self.assertLess(len(persisted), 128 * 1024)  # below the count-bound ceiling
+        # Byte-boundary eviction, not the entry ceiling, is what capped retention.
+        self.assertLess(snapshot.count, MAX_RETAINED_EVENTS)
+        self.assertGreater(snapshot.count, MIN_RETAINED_EVENTS)
+        # Eviction drops the oldest events: the survivors are a contiguous run of
+        # the newest sequences, and the just-recorded event is the newest.
+        sequences = [event.sequence for event in snapshot.events]
+        self.assertEqual(sequences, list(range(sequences[0], sequences[-1] + 1)))
+        self.assertEqual(sequences[-1], snapshot.next_sequence - 1)
+        self.assertGreater(sequences[0], 1)
 
     def test_concurrent_writers_keep_unique_ordered_events(self):
         journal = EventJournal(self.path, maximum_entries=128)
