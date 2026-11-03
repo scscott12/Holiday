@@ -187,7 +187,7 @@ class PiperSpeechEngine:
         from piper import PiperVoice
 
         voice = PiperVoice.load(model_path, config_path=config_path)
-        return cls(
+        engine = cls(
             voice=voice,
             audio_module=audio_module,
             jaw_set=jaw_set,
@@ -199,6 +199,8 @@ class PiperSpeechEngine:
             output_channels=output_channels,
             frame_ms=frame_ms,
         )
+        engine.warm_up()
+        return engine
 
     def _restart_stream(self, interrupted: bool) -> None:
         try:

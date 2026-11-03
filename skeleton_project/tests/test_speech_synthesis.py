@@ -216,6 +216,74 @@ class SpeechSynthesisTests(unittest.TestCase):
         self.assertEqual(self.voice.calls, ["Ready"])
         self.assertEqual(self.audio.stream.writes, [])
 
+    def test_load_loads_model_and_warms_up(self):
+        """Loading the Piper voice loads the model and warms up the engine."""
+        self.voice = FakeVoice(
+            [FakeChunk(np.full(20, 1000, dtype=np.int16))]
+        )
+        self.audio = FakeAudio()
+        self.jaw = []
+        self.volume = [1.0]
+
+        class FakePiperVoice:
+            @classmethod
+            def load(cls, model_path, config_path=None):
+                return self.voice
+
+        with patch.dict(
+            "sys.modules",
+            {"piper": SimpleNamespace(PiperVoice=FakePiperVoice)},
+        ), patch.object(
+            PiperSpeechEngine,
+            "warm_up",
+        ) as warm_up:
+            PiperSpeechEngine.load(
+                "model.onnx",
+                audio_module=self.audio,
+                jaw_set=self.jaw.append,
+                volume_getter=lambda: self.volume[0],
+                rest_fraction=0.25,
+                maximum_fraction=1.0,
+                config_path=None,
+            )
+
+        # load() constructs the engine from the loaded voice, then warms it up.
+        self.assertTrue(warm_up.called)
+        self.assertEqual(warm_up.call_count, 1)
+
+    def test_load_warm_up_reaches_synthesis(self):
+        """load() warms up by running one silent inference on the loaded model."""
+        self.voice = FakeVoice(
+            [FakeChunk(np.full(20, 1000, dtype=np.int16))]
+        )
+        self.audio = FakeAudio()
+        self.jaw = []
+        self.volume = [1.0]
+
+        class FakePiperVoice:
+            @classmethod
+            def load(cls, model_path, config_path=None):
+                return self.voice
+
+        with patch.dict(
+            "sys.modules",
+            {"piper": SimpleNamespace(PiperVoice=FakePiperVoice)},
+        ):
+            engine = PiperSpeechEngine.load(
+                "model.onnx",
+                audio_module=self.audio,
+                jaw_set=self.jaw.append,
+                volume_getter=lambda: self.volume[0],
+                rest_fraction=0.25,
+                maximum_fraction=1.0,
+                config_path=None,
+            )
+
+        # The default warm-up synthesized a silent line through the loaded model
+        # but wrote nothing to the speaker.
+        self.assertEqual(self.voice.calls, ["Ready."])
+        self.assertEqual(self.audio.stream.writes, [])
+
 
 class PcmPlaybackTests(unittest.TestCase):
     """Verify direct PCM playback through the persistent stream."""
