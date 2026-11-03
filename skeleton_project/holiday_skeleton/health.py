@@ -362,6 +362,14 @@ class RuntimeHealthMonitor:
             timestamp=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         )
 
+    def health_check(self, sample: bool = True) -> HealthSnapshot:
+        """Run the health check and return the resulting health snapshot.
+
+        The snapshot reports the overall system status, derived from both the
+        component/telemetry state and the live telemetry reading.
+        """
+        return self.publish_now(sample=sample)
+
     def publish_now(self, sample: bool = True) -> HealthSnapshot:
         if sample:
             self.sample()
