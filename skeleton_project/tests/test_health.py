@@ -117,6 +117,40 @@ class RuntimeHealthMonitorTests(unittest.TestCase):
         self.assertEqual(snapshot.counters["audio_dropped_frames"], 4)
         self.assertNotIn("bad", snapshot.latencies)
 
+    def test_health_check_reports_system_status_from_telemetry(self):
+        healthy, _ = self.monitor(
+            SystemTelemetry(cpu_temperature_c=55.0, disk_percent=40.0)
+        )
+        healthy.set_component("runtime", ComponentState.READY, critical=True, publish=False)
+
+        snapshot = healthy.health_check()
+
+        self.assertEqual(snapshot.state, HealthState.HEALTHY)
+        self.assertEqual(snapshot.components["system"].state, ComponentState.READY)
+        self.assertTrue(snapshot.operational)
+
+        warning, _ = self.monitor(
+            SystemTelemetry(cpu_temperature_c=78.0, disk_percent=92.0)
+        )
+        warning.set_component("runtime", ComponentState.READY, critical=True, publish=False)
+
+        snapshot = warning.health_check()
+
+        self.assertEqual(snapshot.state, HealthState.DEGRADED)
+        self.assertEqual(snapshot.components["system"].state, ComponentState.DEGRADED)
+        self.assertTrue(snapshot.operational)
+
+        failed, _ = self.monitor(
+            SystemTelemetry(cpu_temperature_c=90.0, disk_percent=99.0)
+        )
+        failed.set_component("runtime", ComponentState.READY, critical=True, publish=False)
+
+        snapshot = failed.health_check()
+
+        self.assertEqual(snapshot.state, HealthState.UNHEALTHY)
+        self.assertEqual(snapshot.components["system"].state, ComponentState.FAILED)
+        self.assertFalse(snapshot.operational)
+
     def test_temperature_throttling_and_disk_are_evaluated(self):
         telemetry = SystemTelemetry(
             cpu_temperature_c=76.5,
