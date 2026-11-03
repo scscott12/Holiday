@@ -71,7 +71,7 @@ def split_pcm16_frames(
     samples_per_frame = max(1, round(sample_rate * frame_ms / 1000.0))
     bytes_per_frame = samples_per_frame * bytes_per_sample_frame
     usable = len(pcm) - (len(pcm) % bytes_per_sample_frame)
-    return [pcm[pos : min(pos + bytes_per_frame, usable)] for pos in range(0, usable, bytes_per_frame)]
+    return [pcm[pos: min(pos + bytes_per_frame, usable)] for pos in range(0, usable, bytes_per_frame)]
 
 
 def scale_pcm16(frame: bytes, volume: float) -> bytes:

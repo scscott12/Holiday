@@ -16,8 +16,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from holiday_skeleton.content import ContentReloadError, prepare_content
-from holiday_skeleton.discovery import discovery_messages
+from holiday_skeleton.content import ContentReloadError, prepare_content  # noqa: E402
+from holiday_skeleton.discovery import discovery_messages  # noqa: E402
 
 
 class ProjectValidationError(ValueError):

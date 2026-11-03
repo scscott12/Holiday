@@ -225,17 +225,29 @@ def _parse_pack(name: str, raw: Any) -> PersonalityPack:
         "memory_turns", "context_tokens", "maximum_tokens", "temperature",
         "repeat_penalty", "phrase_minimum", "phrase_soft", "phrase_maximum",
     }, f"{name}.reply")
-    phrase_minimum = int(_number(reply_raw.get("phrase_minimum", 12), f"{name}.reply.phrase_minimum", 1, 200, integer=True))
-    phrase_soft = int(_number(reply_raw.get("phrase_soft", 36), f"{name}.reply.phrase_soft", 1, 300, integer=True))
-    phrase_maximum = int(_number(reply_raw.get("phrase_maximum", 72), f"{name}.reply.phrase_maximum", 1, 500, integer=True))
+    phrase_minimum = int(
+        _number(reply_raw.get("phrase_minimum", 12), f"{name}.reply.phrase_minimum", 1, 200, integer=True)
+    )
+    phrase_soft = int(
+        _number(reply_raw.get("phrase_soft", 36), f"{name}.reply.phrase_soft", 1, 300, integer=True)
+    )
+    phrase_maximum = int(
+        _number(reply_raw.get("phrase_maximum", 72), f"{name}.reply.phrase_maximum", 1, 500, integer=True)
+    )
     if not phrase_minimum <= phrase_soft <= phrase_maximum:
         raise PersonalityConfigError(
             f"{name}.reply phrase boundaries must satisfy minimum <= soft <= maximum"
         )
     reply = ReplySettings(
-        memory_turns=int(_number(reply_raw.get("memory_turns", 3), f"{name}.reply.memory_turns", 0, 10, integer=True)),
-        context_tokens=int(_number(reply_raw.get("context_tokens", 512), f"{name}.reply.context_tokens", 128, 8192, integer=True)),
-        maximum_tokens=int(_number(reply_raw.get("maximum_tokens", 50), f"{name}.reply.maximum_tokens", 8, 256, integer=True)),
+        memory_turns=int(
+            _number(reply_raw.get("memory_turns", 3), f"{name}.reply.memory_turns", 0, 10, integer=True)
+        ),
+        context_tokens=int(
+            _number(reply_raw.get("context_tokens", 512), f"{name}.reply.context_tokens", 128, 8192, integer=True)
+        ),
+        maximum_tokens=int(
+            _number(reply_raw.get("maximum_tokens", 50), f"{name}.reply.maximum_tokens", 8, 256, integer=True)
+        ),
         temperature=float(_number(reply_raw.get("temperature", 0.6), f"{name}.reply.temperature", 0, 2)),
         repeat_penalty=float(_number(reply_raw.get("repeat_penalty", 1.05), f"{name}.reply.repeat_penalty", 0.5, 2)),
         phrase_minimum=phrase_minimum,
@@ -248,7 +260,9 @@ def _parse_pack(name: str, raw: Any) -> PersonalityPack:
         raise PersonalityConfigError(f"{name}.voice must be an object")
     _reject_unknown(voice_raw, {"volume_multiplier"}, f"{name}.voice")
     voice = VoiceSettings(
-        volume_multiplier=float(_number(voice_raw.get("volume_multiplier", 1.0), f"{name}.voice.volume_multiplier", 0.25, 2.0))
+        volume_multiplier=float(
+            _number(voice_raw.get("volume_multiplier", 1.0), f"{name}.voice.volume_multiplier", 0.25, 2.0)
+        )
     )
 
     barge_raw = raw.get("barge_in", {})

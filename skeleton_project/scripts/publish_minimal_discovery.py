@@ -8,8 +8,8 @@ from paho.mqtt import client as mqtt
 
 # Allow this script to run directly from skeleton_project/scripts.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from holiday_skeleton.discovery import discovery_messages
-from holiday_skeleton.personality import PersonalityConfigError, PersonalityLibrary
+from holiday_skeleton.discovery import discovery_messages  # noqa: E402
+from holiday_skeleton.personality import PersonalityConfigError, PersonalityLibrary  # noqa: E402
 
 
 HOST = os.environ.get("MQTT_HOST", "127.0.0.1")
