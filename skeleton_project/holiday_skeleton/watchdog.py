@@ -352,6 +352,41 @@ class ControllerWatchdog:
         )
         self._thread.start()
 
+    @property
+    def restart_required(self) -> bool:
+        """True when the controller has been stale long enough that systemd
+        should restart the service.
+
+        systemd's ``Restart=always`` policy handles the actual restart once the
+        process exits.  This flag lets the main loop or an external supervisor
+        detect the condition and exit or request a restart before the watchdog
+        timeout expires.
+        """
+        with self._lock:
+            if not self.enabled:
+                return False
+            if self._state != WatchdogState.STALE:
+                return False
+            pulse = self._last_controller_pulse
+            if pulse is None:
+                return False
+            age = self.clock() - pulse
+            return age > float(self.notifier.watchdog_timeout_seconds or 0.0)
+
+    def request_restart(self) -> None:
+        """Signal that the service should be restarted.
+
+        Sends a stopping notification to systemd so that the ``Restart=always``
+        policy can kick in.  This is safe to call from any thread.
+        """
+        if not self.enabled:
+            return
+        self._stop_event.set()
+        with self._lock:
+            self._state = WatchdogState.STOPPING
+        self.notifier.stopping("watchdog restart requested")
+        self._emit()
+
     def stop(self, message: object = "service stopping") -> None:
         self._stop_event.set()
         thread = self._thread
