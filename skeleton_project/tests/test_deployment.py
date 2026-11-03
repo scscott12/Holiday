@@ -525,6 +525,27 @@ class DeploymentTests(unittest.TestCase):
             ],
         )
 
+    def test_failed_deployment_triggers_rollback_and_verifies_rollback(self):
+        """Simulate a failed deployment and assert automatic rollback is triggered."""
+        old = self._old_versioned_install()
+        systemd = FakeSystemd(start_failures=[True, False])
+        deployer = self._deployer(systemd)
+
+        with self.assertRaisesRegex(DeploymentError, "rolled back successfully"):
+            deployer.deploy("failed-release")
+
+        self.assertTrue(
+            (self.prefix / "releases" / "failed-release").exists(),
+            "candidate release should remain in place after rollback",
+        )
+        self.assertFalse(deployer.paths.record.exists(), "no active record after rollback")
+
+        backup = next(
+            (deployer.paths.backups / d).resolve()
+            for d in os.listdir(deployer.paths.backups)
+        )
+        deployer.verify_rollback(old.resolve(), backup)
+
     def test_rollback_failure_reports_both_deploy_and_rollback_errors(self):
         old = self._old_versioned_install()
         systemd = FakeSystemd()
