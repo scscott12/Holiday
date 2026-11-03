@@ -944,6 +944,33 @@ class ReleaseDeployer:
                     f"prior release was restored but its health check failed: {error}"
                 ) from error
 
+    def verify_rollback(
+        self,
+        previous: Optional[Path],
+        backup: Path,
+    ) -> None:
+        """Verify that automatic rollback restored the prior release correctly."""
+        current = self._current_release()
+        if previous is not None:
+            if current != previous:
+                raise DeploymentError(
+                    f"rollback verification failed: current is {current}, "
+                    f"expected {previous}"
+                )
+        else:
+            if current is not None:
+                raise DeploymentError(
+                    f"rollback verification failed: current should be None, "
+                    f"found {current}"
+                )
+        if not backup.exists():
+            raise DeploymentError(
+                f"rollback verification failed: backup {backup} does not exist"
+            )
+        metadata = self._load_backup(backup)
+        if metadata["release_id"] == "":
+            raise DeploymentError("rollback verification failed: empty release id")
+
     def deploy(
         self, release_id: str, *, simulate_activation_failure: bool = False
     ) -> DeploymentResult:
