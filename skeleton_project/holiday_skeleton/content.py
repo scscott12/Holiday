@@ -190,3 +190,54 @@ def prepare_content(
         raise ContentReloadError(str(error)) from error
     except OSError as error:
         raise ContentReloadError(f"cannot prepare content: {error}") from error
+
+
+class ContentManager:
+    """Holds the committed content and reloads it from disk.
+
+    ``reload`` prepares a candidate bundle without touching the active one and
+    only swaps it in once preparation succeeds. A failed reload leaves the
+    current content unchanged, so an interrupted or invalid edit cannot corrupt
+    the live libraries.
+    """
+
+    def __init__(
+        self,
+        *,
+        personalities_path: str = "",
+        requested_personality: str = "",
+        current_personality: str = "",
+        scenes_path: str = "",
+        sound_directory: str = "",
+    ) -> None:
+        self.personalities_path = personalities_path
+        self.requested_personality = requested_personality
+        self.current_personality = current_personality
+        self.scenes_path = scenes_path
+        self.sound_directory = sound_directory
+        self.active: Optional[PreparedContent] = None
+
+    def reload(self, **options: object) -> PreparedContent:
+        """Reload content from disk and commit it, keeping the current state.
+
+        ``options`` may override any ``prepare_content`` keyword for this reload.
+        The candidate is fully prepared before the swap, so a rejected candidate
+        leaves the previously committed bundle intact.
+        """
+
+        arguments = {
+            "personalities_enabled": True,
+            "personalities_path": self.personalities_path,
+            "requested_personality": self.requested_personality,
+            "current_personality": self.current_personality,
+            "scenes_enabled": True,
+            "scenes_path": self.scenes_path,
+            "sound_directory": self.sound_directory,
+            "sound_sample_rate": 16000,
+            "scene_maximum_seconds": 30.0,
+            "cache_sounds": False,
+        }
+        arguments.update(options)
+        candidate = prepare_content(**arguments)
+        self.active = candidate
+        return candidate

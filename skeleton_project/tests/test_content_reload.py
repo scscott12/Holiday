@@ -5,6 +5,7 @@ import wave
 from pathlib import Path
 
 from holiday_skeleton.content import (
+    ContentManager,
     ContentReloadError,
     ContentReloadInterrupted,
     prepare_content,
@@ -301,6 +302,114 @@ class ContentReloadTests(unittest.TestCase):
 
         with self.assertRaises(ContentReloadInterrupted):
             self._prepare(interrupted=interrupted)
+
+    def test_manager_reload_picks_up_file_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            personalities_path = self._write(root, "personalities.json", {
+                "version": 1,
+                "active": "pirate",
+                "personalities": {
+                    "pirate": {
+                        "display_name": "Pirate",
+                        "system_prompt": "Pirate.",
+                        "opening_lines": {
+                            "morning": ["Greeting A."],
+                            "afternoon": ["Greeting A."],
+                            "evening": ["Greeting A."],
+                            "night": ["Greeting A."],
+                        },
+                        "goodbye_lines": ["Goodbye."],
+                        "idle_lines": ["Idle."],
+                        "fallback_line": "Repeat.",
+                        "default_scene": "awakening",
+                    },
+                },
+            })
+            scenes_path = self._write(root, "scenes.json", self._valid_scenes())
+
+            manager = ContentManager(
+                personalities_path=str(personalities_path),
+                requested_personality="pirate",
+                current_personality="pirate",
+                scenes_path=str(scenes_path),
+                sound_directory=str(root),
+            )
+
+            bundle = manager.reload()
+            self.assertEqual(
+                bundle.active_personality.opening_lines["morning"],
+                ("Greeting A.",),
+            )
+            # The committed bundle is what the manager reports as active.
+            self.assertIs(manager.active, bundle)
+            self.assertIn("Greeting A.", bundle.canned_lines)
+
+            # Editing the content file and reloading picks up the new content.
+            with open(personalities_path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            data["personalities"]["pirate"]["opening_lines"]["morning"] = [
+                "Greeting B."
+            ]
+            personalities_path.write_text(json.dumps(data), encoding="utf-8")
+
+            reloaded = manager.reload()
+            self.assertEqual(
+                reloaded.active_personality.opening_lines["morning"],
+                ("Greeting B.",),
+            )
+            self.assertIs(manager.active, reloaded)
+            self.assertIn("Greeting B.", reloaded.canned_lines)
+            # The new text lands in the cached speech; the morning entry is the
+            # one that changed.
+            self.assertNotIn(
+                "Greeting A.",
+                reloaded.active_personality.opening_lines["morning"],
+            )
+
+    def test_manager_failed_reload_keeps_active(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            personalities_path = self._write(root, "personalities.json", {
+                "version": 1,
+                "active": "pirate",
+                "personalities": {
+                    "pirate": {
+                        "display_name": "Pirate",
+                        "system_prompt": "Pirate.",
+                        "opening_lines": {
+                            "morning": ["Greeting A."],
+                            "afternoon": ["Greeting A."],
+                            "evening": ["Greeting A."],
+                            "night": ["Greeting A."],
+                        },
+                        "goodbye_lines": ["Goodbye."],
+                        "idle_lines": ["Idle."],
+                        "fallback_line": "Repeat.",
+                        "default_scene": "awakening",
+                    },
+                },
+            })
+            scenes_path = self._write(root, "scenes.json", self._valid_scenes())
+            manager = ContentManager(
+                personalities_path=str(personalities_path),
+                requested_personality="pirate",
+                current_personality="pirate",
+                scenes_path=str(scenes_path),
+                sound_directory=str(root),
+            )
+
+            original = manager.reload()
+            self.assertIn("Greeting A.", original.canned_lines)
+
+            # A corrupted scene file rejects the candidate; the committed
+            # bundle stays untouched.
+            scenes_path.write_text("{", encoding="utf-8")
+            with self.assertRaises(ContentReloadError):
+                manager.reload()
+
+            self.assertIs(manager.active, original)
+            self.assertIn("Greeting A.", manager.active.canned_lines)
 
 
 if __name__ == "__main__":
