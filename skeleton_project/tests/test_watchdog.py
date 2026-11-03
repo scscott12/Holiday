@@ -301,6 +301,52 @@ class ControllerWatchdogTests(unittest.TestCase):
         self.assertIn("WorkingDirectory=/run/holiday-skeleton", service)
         self.assertIn("Environment=LG_WD=/run/holiday-skeleton", service)
 
+    def test_restart_required_when_stale_past_timeout(self):
+        watchdog, clock, _sent, _snapshots = self.make_watchdog()
+        watchdog.pulse("speaking")
+        self.assertTrue(watchdog.feed_once())
+
+        # Before timeout: state is READY, not restart
+        self.assertFalse(watchdog.restart_required)
+
+        # Go stale (past stale_after but within timeout)
+        clock.advance(46.0)
+        self.assertFalse(watchdog.feed_once())
+        self.assertEqual(watchdog.snapshot().state, WatchdogState.STALE)
+        # Not yet past the full timeout (60s), so restart not required
+        self.assertFalse(watchdog.restart_required)
+
+        # Go past the full systemd timeout
+        clock.advance(15.0)
+        self.assertTrue(watchdog.restart_required)
+
+    def test_request_restart_signals_stopping_and_stops_feeder(self):
+        watchdog, clock, sent, _snapshots = self.make_watchdog()
+        watchdog.pulse("idle")
+        self.assertTrue(watchdog.feed_once())
+        initial_messages = len(sent)
+
+        watchdog.request_restart()
+
+        self.assertEqual(watchdog.snapshot().state, WatchdogState.STOPPING)
+        # The stopping notification was sent
+        self.assertTrue(any(b"STOPPING=1" in m[1] for m in sent))
+        # No more feeds after restart
+        self.assertFalse(watchdog.feed_once())
+        self.assertEqual(len(sent), initial_messages + 1)
+
+    def test_request_restart_is_noop_when_disabled(self):
+        watchdog = ControllerWatchdog.from_environment(environ={})
+
+        # Should not raise
+        watchdog.request_restart()
+        self.assertFalse(watchdog.restart_required)
+
+    def test_restart_not_required_when_disabled(self):
+        watchdog = ControllerWatchdog.from_environment(environ={})
+        watchdog.pulse("idle")
+        self.assertFalse(watchdog.restart_required)
+
 
 if __name__ == "__main__":
     unittest.main()
