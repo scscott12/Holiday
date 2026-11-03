@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Any, Mapping, Optional
+from typing import Any, Optional
 
 
 class CalibrationConfigError(ValueError):

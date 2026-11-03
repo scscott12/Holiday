@@ -133,7 +133,7 @@ def resample_linear_int16(
         + combined[upper].astype(np.float32) * fraction
     )
     output = np.clip(np.round(output), -32768, 32767).astype(np.int16)
-    state["previous"] = combined[lower[-1] + 1 :]
+    state["previous"] = combined[lower[-1] + 1:]
     state["phase"] = positions[-1] - lower[-1]
     return output
 

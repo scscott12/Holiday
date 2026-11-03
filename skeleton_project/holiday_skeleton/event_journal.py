@@ -212,7 +212,7 @@ class EventJournal:
         }
 
     def _encode_bounded(self) -> tuple[bytes, list[DiagnosticEvent]]:
-        retained = list(self._events[-self.maximum_entries :])
+        retained = list(self._events[-self.maximum_entries:])
         while True:
             encoded = (
                 json.dumps(self._payload(retained), indent=2, sort_keys=True) + "\n"
@@ -329,7 +329,7 @@ class EventJournal:
                 raise EventJournalError("journal event sequences must be unique and ordered")
             if sequences and next_sequence <= sequences[-1]:
                 raise EventJournalError("next_sequence must follow retained events")
-            self._events = events[-self.maximum_entries :]
+            self._events = events[-self.maximum_entries:]
             self._active_session = session
             self._next_sequence = next_sequence
             self._loaded = True
