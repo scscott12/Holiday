@@ -9,6 +9,8 @@ by main() turning into a non-zero exit code rather than an uncaught error.
 
 import importlib
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -45,6 +47,23 @@ class ValidateProjectTests(unittest.TestCase):
     def test_main_returns_success_for_real_layout(self):
         # main() validates the real packaged content and returns its exit code.
         self.assertEqual(main(), 0)
+
+    def test_script_exits_zero_when_run_from_project_directory(self):
+        result = subprocess.run(
+            [sys.executable, "scripts/validate_project.py"],
+            cwd=ROOT,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_missing_prompts_example_fails_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("personalities.json", "scenes.json"):
+                (root / name).write_bytes((ROOT / name).read_bytes())
+            self.assertNotEqual(main(root), 0)
 
     def test_missing_required_file_fails_validation(self):
         with tempfile.TemporaryDirectory() as directory:
