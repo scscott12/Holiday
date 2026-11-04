@@ -205,6 +205,30 @@ class PersonalityLibraryTests(unittest.TestCase):
         self.assertNotIn("system_prompt", metadata["personalities"]["ghost"])
         self.assertNotIn("opening_lines", metadata["personalities"]["ghost"])
 
+    def test_load_reads_file_and_applies_configuration_and_defaults(self):
+        minimal = pack()
+        for key in ("reply", "voice", "barge_in", "default_scene"):
+            minimal.pop(key)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "personalities.json"
+            path.write_text(json.dumps({
+                "active": "Watcher",
+                "personalities": {"ghost": pack(), "watcher": minimal},
+            }), encoding="utf-8")
+            library = PersonalityLibrary.load(path)
+
+        self.assertEqual(library.default_name, "watcher")
+        self.assertEqual(library.select().name, "watcher")
+        configured = library.select("ghost")
+        self.assertEqual(configured.reply.temperature, 0.5)
+        self.assertEqual(configured.voice.volume_multiplier, 0.8)
+        self.assertTrue(configured.barge_in.require_wake_word)
+        defaults = library.select()
+        self.assertEqual(defaults.reply.memory_turns, 3)
+        self.assertEqual(defaults.voice.volume_multiplier, 1.0)
+        self.assertEqual(defaults.barge_in.wake_words, ("skeleton",))
+        self.assertEqual(defaults.default_scene, "")
+
     def test_load_reports_invalid_json_without_leaking_traceback(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "personalities.json"
