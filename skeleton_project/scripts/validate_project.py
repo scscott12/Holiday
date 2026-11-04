@@ -43,6 +43,21 @@ def _validate_yaml(path: Path) -> None:
         )
 
 
+REQUIRED_JSON_FILES = ("personalities.json", "scenes.json", "prompts.json.example")
+
+
+def _validate_required_json(root: Path) -> None:
+    for name in REQUIRED_JSON_FILES:
+        path = root / name
+        if not path.is_file():
+            raise ProjectValidationError(f"required file {name} is missing")
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                json.load(handle)
+        except (OSError, ValueError) as error:
+            raise ProjectValidationError(f"cannot parse {name}: {error}") from error
+
+
 def _validate_discovery(personality_names: tuple[str, ...]) -> int:
     messages = discovery_messages("skeleton", personality_names)
     topics = [topic for topic, _payload in messages]
@@ -80,6 +95,7 @@ def _validate_discovery(personality_names: tuple[str, ...]) -> int:
 
 
 def validate_project(root: Path = PROJECT_ROOT) -> dict[str, Any]:
+    _validate_required_json(root)
     prepared = prepare_content(
         personalities_enabled=True,
         personalities_path=str(root / "personalities.json"),
