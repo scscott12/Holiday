@@ -454,5 +454,95 @@ class OllamaStreamingClientTests(unittest.TestCase):
         self.assertTrue(result.metrics.interrupted)
 
 
+class BrainEdgeCaseTests(unittest.TestCase):
+    def test_empty_chunker_input_yields_nothing(self):
+        chunker = PhraseChunker()
+        self.assertEqual(chunker.feed(""), [])
+        self.assertEqual(chunker.feed("   \n\t "), [])
+        self.assertEqual(chunker.finish(), [])
+
+    def test_very_long_input_is_split_into_bounded_phrases(self):
+        chunker = PhraseChunker(minimum_chars=8, soft_chars=24, maximum_chars=48)
+        text = " ".join(["word"] * 400)
+        phrases = chunker.feed(text) + chunker.finish()
+
+        self.assertGreater(len(phrases), 1)
+        self.assertTrue(all(len(phrase) <= 48 for phrase in phrases))
+        self.assertEqual(" ".join(phrases), text)
+
+    def test_chunker_limits_are_normalized(self):
+        chunker = PhraseChunker(minimum_chars=0, soft_chars=-5, maximum_chars=-1)
+        self.assertEqual(chunker.minimum_chars, 1)
+        self.assertEqual(chunker.soft_chars, 1)
+        self.assertEqual(chunker.maximum_chars, 1)
+
+    def test_zero_turn_memory_retains_nothing_and_drops_opening_line(self):
+        memory = ConversationMemory(0, opening_line="Welcome!")
+        self.assertFalse(memory.remember("Hello", "Ahoy"))
+        self.assertEqual(memory.turn_count, 0)
+        self.assertEqual(memory.messages(), [])
+
+    def test_negative_turn_limit_is_treated_as_disabled(self):
+        memory = ConversationMemory(-4)
+        self.assertEqual(memory.maximum_turns, 0)
+        self.assertFalse(memory.remember("Hello", "Ahoy"))
+
+    def test_memory_evicts_oldest_turn_at_limit(self):
+        memory = ConversationMemory(2)
+        for index in range(5):
+            self.assertTrue(memory.remember(f"q{index}", f"a{index}"))
+        self.assertEqual(memory.turn_count, 2)
+        self.assertEqual(
+            [m["content"] for m in memory.messages()], ["q3", "a3", "q4", "a4"]
+        )
+
+    def test_long_exchange_is_retained_whole(self):
+        memory = ConversationMemory(1)
+        long_text = "boo " * 5000
+        self.assertTrue(memory.remember(long_text, long_text))
+        self.assertEqual(memory.messages()[0]["content"], long_text.strip())
+
+    def test_interrupted_or_errored_reply_is_not_remembered(self):
+        memory = ConversationMemory(2)
+        interrupted = ReplyMetrics(0, 0, 0, 1, 1, interrupted=True)
+        ok = ReplyMetrics(0, 0, 0, 1, 1)
+        for result in [
+            ReplyResult("partial", interrupted),
+            ReplyResult("text", ok, error="boom"),
+        ]:
+            self.assertFalse(memory.remember_reply("Hi", result))
+        self.assertTrue(memory.remember_reply("Hi", ReplyResult(" Hello ", ok)))
+        self.assertEqual(memory.messages()[1]["content"], "Hello")
+
+    def test_normalize_url_edge_cases(self):
+        self.assertEqual(
+            normalize_ollama_chat_url("http://h:11434/api/generate/"),
+            "http://h:11434/api/chat",
+        )
+        self.assertEqual(
+            normalize_ollama_chat_url("http://h:11434/api/chat/"),
+            "http://h:11434/api/chat",
+        )
+        self.assertEqual(normalize_ollama_chat_url(""), "")
+
+    def test_empty_prompt_and_no_system_prompt_build_minimal_payload(self):
+        response = FakeResponse([{"message": {"content": ""}, "done": True}])
+        http = FakeHttp(response)
+        client = OllamaStreamingClient(
+            http_client=http,
+            url="http://ollama/api/chat",
+            model="tiny",
+            system_prompt="   ",
+            keep_alive="1m",
+            options={},
+        )
+        reply = client.start_reply("  ")
+        list(reply)
+        reply.wait(timeout=5)
+
+        payload = http.calls[0][1]["json"]
+        self.assertEqual(payload["messages"], [{"role": "user", "content": ""}])
+
+
 if __name__ == "__main__":
     unittest.main()
