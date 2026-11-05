@@ -309,5 +309,131 @@ class SkeletonControllerTests(unittest.TestCase):
         self.assertEqual(idle_calls, [])
 
 
+    def test_full_queue_rejects_events_and_releases_trigger_slot(self):
+        controller = SkeletonController(lambda event: None, max_queue_size=1)
+
+        self.assertTrue(controller.enqueue(EventKind.SAY, "a"))
+        self.assertFalse(controller.enqueue(EventKind.TRIGGER))
+        self.assertFalse(controller.enqueue(EventKind.SAY, "b"))
+
+        controller._queue.get_nowait()
+        self.assertTrue(controller.enqueue(EventKind.TRIGGER))
+
+    def test_enqueue_after_stop_only_accepts_shutdown(self):
+        controller = SkeletonController(lambda event: None)
+        controller.request_stop("test")
+
+        self.assertFalse(controller.enqueue(EventKind.SAY, "late"))
+        self.assertFalse(controller.enqueue(EventKind.TRIGGER))
+        self.assertTrue(controller.enqueue(EventKind.SHUTDOWN))
+        self.assertFalse(controller.request_maintenance(True))
+
+    def test_request_stop_with_full_queue_still_stops_loop(self):
+        handled = []
+        controller = SkeletonController(handled.append, max_queue_size=1)
+        controller.enqueue(EventKind.SAY, "x")
+        controller.request_stop("test")
+
+        controller.run_forever()
+
+        self.assertTrue(controller.stop_event.is_set())
+        self.assertEqual(controller.state, RuntimeState.STOPPING)
+        self.assertTrue(controller.maintenance_interrupt_event.is_set())
+
+    def test_handler_failure_sets_error_state_and_clears_trigger(self):
+        states = []
+
+        def handler(event):
+            raise RuntimeError("boom")
+
+        controller = SkeletonController(handler, state_changed=states.append)
+        controller.enqueue(EventKind.TRIGGER)
+
+        with self.assertRaises(RuntimeError):
+            controller.run_forever()
+
+        self.assertEqual(controller.state, RuntimeState.ERROR)
+        self.assertEqual(states[-1], RuntimeState.ERROR)
+        self.assertTrue(controller.enqueue(EventKind.TRIGGER))
+
+    def test_idle_handler_failure_sets_error_state(self):
+        def idle(interrupt):
+            raise ValueError("idle broke")
+
+        controller = SkeletonController(lambda event: None, idle_handler=idle)
+
+        with self.assertRaises(ValueError):
+            controller.run_forever()
+
+        self.assertEqual(controller.state, RuntimeState.ERROR)
+
+    def test_state_changed_only_fires_on_actual_change(self):
+        states = []
+        controller = SkeletonController(
+            lambda event: None, state_changed=states.append
+        )
+
+        controller.set_state(RuntimeState.IDLE)
+        controller.set_state(RuntimeState.IDLE)
+        controller.set_state(RuntimeState.ERROR)
+
+        self.assertEqual(states, [RuntimeState.IDLE, RuntimeState.ERROR])
+
+    def test_latest_maintenance_request_wins_and_is_consumed_once(self):
+        controller = SkeletonController(lambda event: None)
+
+        self.assertTrue(controller.request_maintenance(True, "a"))
+        self.assertTrue(controller.request_maintenance(False, "b"))
+        event = controller._take_maintenance_request()
+
+        self.assertEqual(event.kind, EventKind.SET_MAINTENANCE_MODE)
+        self.assertIs(event.payload, False)
+        self.assertEqual(event.source, "b")
+        self.assertIsNone(controller._take_maintenance_request())
+
+    def test_set_maintenance_active_toggles_interrupt(self):
+        controller = SkeletonController(lambda event: None)
+
+        controller.set_maintenance_active(True)
+        self.assertTrue(controller.maintenance_interrupt_event.is_set())
+        controller.set_maintenance_active(False)
+        self.assertFalse(controller.maintenance_interrupt_event.is_set())
+
+    def test_concurrent_triggers_are_coalesced_to_one(self):
+        controller = SkeletonController(lambda event: None)
+        results = []
+        barrier = threading.Barrier(8)
+
+        def push():
+            barrier.wait(timeout=1)
+            results.append(controller.enqueue(EventKind.TRIGGER))
+
+        threads = [threading.Thread(target=push) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=1)
+
+        self.assertEqual(results.count(True), 1)
+        self.assertEqual(controller._queue.qsize(), 1)
+
+    def test_heartbeat_failure_does_not_block_events(self):
+        handled = []
+        controller = None
+
+        def handler(event):
+            handled.append(event.payload)
+            controller.request_stop("test")
+
+        def bad_heartbeat(state):
+            raise OSError("watchdog")
+
+        controller = SkeletonController(handler, heartbeat=bad_heartbeat)
+        controller.enqueue(EventKind.SAY, 1)
+        controller.run_forever()
+
+        self.assertEqual(handled, [1])
+
+
 if __name__ == "__main__":
     unittest.main()
