@@ -60,6 +60,29 @@ class OperatorSettingsStoreTests(unittest.TestCase):
             self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
             self.assertEqual(list(path.parent.glob("*.tmp")), [])
 
+    def test_update_stores_and_retrieves_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "operator-settings.json"
+            store = OperatorSettingsStore(path)
+
+            saved = store.update(
+                personality="graveyard_host",
+                motion_enabled=True,
+                volume=0.54,
+            )
+            loaded = store.load()
+
+            self.assertEqual(loaded, saved)
+            self.assertEqual(loaded.personality, "graveyard_host")
+            self.assertTrue(loaded.motion_enabled)
+            self.assertEqual(loaded.volume, 0.54)
+            self.assertNotEqual(saved.updated_at, "never")
+
+            store.update(volume=0.2)
+            reloaded = store.load()
+            self.assertEqual(reloaded.volume, 0.2)
+            self.assertEqual(reloaded.personality, "graveyard_host")
+
     def test_second_save_replaces_complete_document(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "operator-settings.json"
