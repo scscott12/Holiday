@@ -98,6 +98,28 @@ class SpeechHelpersTests(unittest.TestCase):
 
 
 class PiperSpeechEngineTests(unittest.TestCase):
+    def test_construction_rejects_invalid_rates_and_channels(self):
+        cases = [
+            {"voice": self._voice(sample_rate=0)},
+            {"voice": self._voice(sample_rate=1000), "output_channels": 0},
+        ]
+        for kwargs in cases:
+            with self.subTest(**kwargs):
+                voice = kwargs.pop("voice", self._voice(sample_rate=1000))
+                with self.assertRaises(ValueError):
+                    PiperSpeechEngine(
+                        voice=voice,
+                        audio_module=FakeAudio(),
+                        jaw_set=lambda value: None,
+                        volume_getter=lambda: 1.0,
+                        rest_fraction=0.25,
+                        maximum_fraction=1.0,
+                        **kwargs,
+                    )
+
+    def _voice(self, sample_rate=1000):
+        return SimpleNamespace(config=SimpleNamespace(sample_rate=sample_rate))
+
     def make_engine(
         self,
         chunks,
@@ -481,6 +503,59 @@ class PiperSpeechEngineTests(unittest.TestCase):
 
         self.assertEqual(self.audio.stream.closed, 1)
         self.assertEqual(engine.cache_entries, 0)
+
+    def test_load_opens_stream_and_warms_up(self):
+        self.voice = FakeVoice([FakeChunk(np.full(20, 1000))])
+        loaded_voice = SimpleNamespace(
+            config=SimpleNamespace(sample_rate=1000),
+            synthesize=self.voice.synthesize,
+        )
+        fake_piper = SimpleNamespace(
+            PiperVoice=SimpleNamespace(load=lambda *args, **kwargs: loaded_voice)
+        )
+        audio = FakeAudio()
+
+        with patch.dict("sys.modules", {"piper": fake_piper}):
+            engine = PiperSpeechEngine.load(
+                "model.onnx",
+                audio_module=audio,
+                jaw_set=lambda value: None,
+                volume_getter=lambda: 1.0,
+                rest_fraction=0.25,
+                maximum_fraction=1.0,
+            )
+
+        self.assertIsInstance(engine, PiperSpeechEngine)
+        self.assertGreaterEqual(engine.sample_rate, 1)
+        self.assertEqual(self.voice.calls, ["Ready."])
+        self.assertEqual(engine.audio_module.stream.writes, [])
+
+    def test_rejects_chunks_with_unsupported_width_channels_or_rate(self):
+        good = FakeChunk(np.full(20, 1000))
+        bytes_ = good.audio_int16_bytes
+        for bad in (
+            SimpleNamespace(sample_rate=1000, sample_width=1, sample_channels=1,
+                            audio_int16_bytes=bytes_),
+            SimpleNamespace(sample_rate=1000, sample_width=2, sample_channels=2,
+                            audio_int16_bytes=bytes_),
+            SimpleNamespace(sample_rate=500, sample_width=2, sample_channels=1,
+                            audio_int16_bytes=bytes_),
+        ):
+            with self.subTest(chunk=bad):
+                engine = self.make_engine([bad])
+                with self.assertRaises(SpeechEngineError) as raised:
+                    engine.speak("Bad chunk.")
+                self.assertIsInstance(raised.exception.__cause__, ValueError)
+
+    def test_cache_warmup_fails_when_voice_yields_no_pcm(self):
+        engine = self.make_engine([])
+
+        metrics = engine.cache_phrases(["Empty line."])
+
+        self.assertEqual(metrics.new_entries, 0)
+        self.assertEqual(metrics.failed_entries, 1)
+        self.assertIn("no pcm", metrics.errors[0].lower())
+        self.assertEqual(metrics.audio_seconds, 0.0)
 
 
 if __name__ == "__main__":
