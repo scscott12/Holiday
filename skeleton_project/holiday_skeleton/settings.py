@@ -214,6 +214,31 @@ class OperatorSettingsStore:
             raise SettingsConfigError(f"cannot parse saved settings: {error}") from error
         return settings_from_payload(payload, self.calibration_defaults)
 
+    def update(
+        self,
+        **changes: Any,
+    ) -> OperatorSettings:
+        """Apply changes to the current settings and persist them atomically.
+
+        Reads the current settings (or a zero-configuration default when none are
+        saved), replaces the named fields with ``changes``, stores the result,
+        and returns the saved settings.
+        """
+        current = self.load()
+        if current is None:
+            current = OperatorSettings(
+                personality="",
+                motion_enabled=False,
+                idle_life_enabled=False,
+                night_mode=False,
+                eyes_dim=0.0,
+                eyes_full=0.0,
+                volume=0.0,
+                day_profile=DayProfile(eyes_dim=0.0, eyes_full=0.0, volume=0.0),
+                calibration=self.calibration_defaults,
+            )
+        return self.save(replace(current, **changes))
+
     def save(self, settings: OperatorSettings) -> OperatorSettings:
         updated = replace(
             settings,
