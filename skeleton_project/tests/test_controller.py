@@ -435,5 +435,156 @@ class SkeletonControllerTests(unittest.TestCase):
         self.assertEqual(handled, [1])
 
 
+class ControllerIntegrationTests(unittest.TestCase):
+    """The controller is the seam between the runtime's event sources and the
+    modules that own hardware, health, and watchdog side effects.  These tests
+    assert that seam works: events reach the handler, and state/heartbeat/
+    interrupt signals reach the other modules without blocking the runtime."""
+
+    def _integration_controller(self, **kwargs):
+        # The runtime wires the controller exactly this way in main():
+        # SkeletonController(_handle_event, _runtime_state_changed,
+        #                     idle_handler=_idle_tick,
+        #                     heartbeat=_controller_heartbeat, ...).
+        return SkeletonController(
+            self._handler,
+            self._state_changed,
+            heartbeat=self._heartbeat,
+            **kwargs,
+        )
+
+    def _make_runtime(self):
+        self._handled = []
+        self._state_changes = []
+        self._heartbeats = []
+
+        def handler(event):
+            self._handled.append(event)
+            if event.payload == "stop":
+                self._controller.request_stop("integration")
+
+        def state_changed(state):
+            self._state_changes.append(state)
+
+        def heartbeat(state):
+            self._heartbeats.append(state)
+
+        self._handler = handler
+        self._state_changed = state_changed
+        self._heartbeat = heartbeat
+        controller = SkeletonController(
+            handler,
+            state_changed,
+            heartbeat=heartbeat,
+        )
+        self._controller = controller
+        return controller
+
+    def test_runtime_wires_all_integration_callbacks(self):
+        controller = self._make_runtime()
+        controller.enqueue(EventKind.SAY, "hello", "test")
+        controller.enqueue(EventKind.SAY, "stop", "test")
+
+        controller.run_forever()
+
+        # A foreground event reached the runtime handler (enqueue integration).
+        self.assertTrue(
+            any(
+                e.kind is EventKind.SAY and e.payload == "hello"
+                for e in self._handled
+            )
+        )
+        # The runtime's state_changed callback saw the lifecycle transitions
+        # the controller owns (state_changed integration).
+        self.assertIn(RuntimeState.IDLE, self._state_changes)
+        self.assertIn(RuntimeState.STOPPING, self._state_changes)
+        # The watchdog heartbeat received progress across the loop
+        # (heartbeat integration); a failure in the callback must not stop it.
+        self.assertGreaterEqual(len(self._heartbeats), 2)
+        self.assertEqual(controller.state, RuntimeState.STOPPING)
+
+    def test_state_changed_notifies_other_modules_only_on_change(self):
+        controller = self._make_runtime()
+        controller.set_state(RuntimeState.IDLE)
+        controller.set_state(RuntimeState.IDLE)  # no change
+        controller.set_state(RuntimeState.SPEAKING)
+
+        # The health/MQTT status module must observe each real transition once.
+        self.assertEqual(self._state_changes, [RuntimeState.IDLE, RuntimeState.SPEAKING])
+        self.assertEqual(controller.state, RuntimeState.SPEAKING)
+
+    def test_heartbeat_reaches_watchdog_without_blocking_work(self):
+        # A watchdog callback failure must not stop the controller from running
+        # other modules' work; it only reports progress.
+        def bad_heartbeat(_state):
+            raise RuntimeError("watchdog reporting must be isolated")
+
+        handled = []
+
+        def handler(event):
+            handled.append(event.payload)
+            controller.request_stop("test")
+
+        controller = SkeletonController(handler, heartbeat=bad_heartbeat)
+        controller.enqueue(EventKind.SAY, "visitor", "test")
+        controller.run_forever()
+
+        self.assertEqual(handled, ["visitor"])
+        self.assertEqual(controller.state, RuntimeState.STOPPING)
+
+    def test_maintenance_interrupt_reaches_other_modules(self):
+        # A maintenance request from the runtime must raise the shared interrupt
+        # that idle/scene/self-test/content-reload modules watch, then be
+        # consumed once as a serialized event ahead of ordinary queued work.
+        observed = []
+        controller = None
+
+        def handler(event):
+            observed.append(event.kind)
+            if event.kind is EventKind.SET_MAINTENANCE_MODE:
+                controller.set_maintenance_active(event.payload)
+                controller.request_stop("test")
+
+        controller = SkeletonController(handler)
+        self.assertTrue(controller.request_maintenance(True, "mqtt"))
+
+        # The shared interrupt is set immediately, before the event is consumed.
+        self.assertTrue(controller.maintenance_interrupt_event.is_set())
+        controller.run_forever()
+
+        self.assertEqual(observed, [EventKind.SET_MAINTENANCE_MODE])
+        # The runtime handler sets the lockout active; the runtime keeps the
+        # shared interrupt raised for the whole lockout, so it stays set.
+        self.assertTrue(controller.maintenance_interrupt_event.is_set())
+
+    def test_foreground_event_interrupts_other_modules_before_running(self):
+        # A foreground event must wake an in-progress module (idle life) before
+        # the controller runs its own handler, so the module yields safely.
+        idle_started = threading.Event()
+        idle_finished = threading.Event()
+        foreground_handled = threading.Event()
+        controller = None
+
+        def idle_handler(interrupt_event):
+            idle_started.set()
+            interrupt_event.wait(timeout=1.0)
+            idle_finished.set()
+
+        def handler(event):
+            foreground_handled.set()
+            controller.request_stop("test")
+
+        controller = SkeletonController(handler, idle_handler=idle_handler)
+        worker = threading.Thread(target=controller.run_forever)
+        worker.start()
+        self.assertTrue(idle_started.wait(timeout=1.0))
+
+        self.assertTrue(controller.enqueue(EventKind.SAY, "visitor", "mqtt"))
+        self.assertTrue(idle_finished.wait(timeout=1.0))
+        self.assertTrue(foreground_handled.wait(timeout=1.0))
+        worker.join(timeout=1.0)
+        self.assertFalse(worker.is_alive())
+
+
 if __name__ == "__main__":
     unittest.main()
