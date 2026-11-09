@@ -167,6 +167,18 @@ class SpeechSynthesisTests(unittest.TestCase):
         self.assertEqual(self.audio.stream.writes, [])
         self.assertEqual(first_audio, [])
 
+    def test_synthesis_none_text_is_noop(self):
+        """None text is a no-op and never reaches Piper synthesis."""
+        engine = self.make_engine([FakeChunk(np.full(10, 1000, dtype=np.int16))])
+        first_audio = []
+
+        metrics = engine.speak(None, first_audio=first_audio.append)
+
+        self.assertEqual(metrics, SpeechMetrics(0.0, 0.0, 0.0, 0))
+        self.assertEqual(self.voice.calls, [])
+        self.assertEqual(self.audio.stream.writes, [])
+        self.assertEqual(first_audio, [])
+
     def test_synthesis_failure_propagates_with_audio_state(self):
         """A failing voice raises SpeechEngineError with correct audio_started."""
         chunk = FakeChunk(np.full(10, 1000, dtype=np.int16))
