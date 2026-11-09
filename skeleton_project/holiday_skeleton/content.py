@@ -216,6 +216,18 @@ class ContentManager:
         self.scenes_path = scenes_path
         self.sound_directory = sound_directory
         self.active: Optional[PreparedContent] = None
+        self._reload_count = 0
+        self._failure_count = 0
+
+    @property
+    def reload_count(self) -> int:
+        """Number of successful reloads that committed a bundle."""
+        return self._reload_count
+
+    @property
+    def failure_count(self) -> int:
+        """Number of reloads that failed and left the active bundle intact."""
+        return self._failure_count
 
     def reload(self, **options: object) -> PreparedContent:
         """Reload content from disk and commit it, keeping the current state.
@@ -240,4 +252,36 @@ class ContentManager:
         arguments.update(options)
         candidate = prepare_content(**arguments)
         self.active = candidate
+        self._reload_count += 1
         return candidate
+
+    def reload_or_keep(self, **options: object) -> Optional[PreparedContent]:
+        """Attempt to reload content; return the current active on failure.
+
+        Unlike ``reload``, this method catches ``ContentReloadError`` and
+        ``ContentReloadInterrupted`` and leaves the active bundle unchanged.
+        The failure is counted via ``failure_count`` so callers can monitor
+        reload health without wrapping every call.
+        """
+
+        arguments = {
+            "personalities_enabled": True,
+            "personalities_path": self.personalities_path,
+            "requested_personality": self.requested_personality,
+            "current_personality": self.current_personality,
+            "scenes_enabled": True,
+            "scenes_path": self.scenes_path,
+            "sound_directory": self.sound_directory,
+            "sound_sample_rate": 16000,
+            "scene_maximum_seconds": 30.0,
+            "cache_sounds": False,
+        }
+        arguments.update(options)
+        try:
+            candidate = prepare_content(**arguments)
+            self.active = candidate
+            self._reload_count += 1
+            return candidate
+        except (ContentReloadError, ContentReloadInterrupted):
+            self._failure_count += 1
+            return self.active
