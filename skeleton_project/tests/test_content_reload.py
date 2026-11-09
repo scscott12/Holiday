@@ -411,6 +411,165 @@ class ContentReloadTests(unittest.TestCase):
             self.assertIs(manager.active, original)
             self.assertIn("Greeting A.", manager.active.canned_lines)
 
+    def test_reload_or_keep_returns_active_on_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            personalities_path = self._write(root, "personalities.json", {
+                "version": 1,
+                "active": "pirate",
+                "personalities": {
+                    "pirate": {
+                        "display_name": "Pirate",
+                        "system_prompt": "Pirate.",
+                        "opening_lines": {
+                            "morning": ["Greeting A."],
+                            "afternoon": ["Greeting A."],
+                            "evening": ["Greeting A."],
+                            "night": ["Greeting A."],
+                        },
+                        "goodbye_lines": ["Goodbye."],
+                        "idle_lines": ["Idle."],
+                        "fallback_line": "Repeat.",
+                        "default_scene": "awakening",
+                    },
+                },
+            })
+            scenes_path = self._write(root, "scenes.json", self._valid_scenes())
+            manager = ContentManager(
+                personalities_path=str(personalities_path),
+                requested_personality="pirate",
+                current_personality="pirate",
+                scenes_path=str(scenes_path),
+                sound_directory=str(root),
+            )
+
+            original = manager.reload_or_keep()
+            self.assertIsNotNone(original)
+            self.assertIn("Greeting A.", original.canned_lines)
+            self.assertEqual(manager.reload_count, 1)
+            self.assertEqual(manager.failure_count, 0)
+
+            # Corrupt the scene file: reload_or_keep should not raise.
+            scenes_path.write_text("{", encoding="utf-8")
+            result = manager.reload_or_keep()
+
+            # Returns the still-active bundle, no exception raised.
+            self.assertIs(result, original)
+            self.assertIs(manager.active, original)
+            self.assertIn("Greeting A.", result.canned_lines)
+            self.assertEqual(manager.reload_count, 1)
+            self.assertEqual(manager.failure_count, 1)
+
+    def test_reload_or_keep_no_active_returns_none_on_first_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = str(Path(directory) / "missing.json")
+            manager = ContentManager(
+                personalities_path=missing,
+                requested_personality="pirate",
+                current_personality="pirate",
+                scenes_path=missing,
+                sound_directory=str(directory),
+            )
+
+            # No prior active bundle; failure returns None.
+            result = manager.reload_or_keep()
+            self.assertIsNone(result)
+            self.assertIsNone(manager.active)
+            self.assertEqual(manager.reload_count, 0)
+            self.assertEqual(manager.failure_count, 1)
+
+    def test_reload_or_keep_interrupted_returns_active(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            personalities_path = self._write(root, "personalities.json", {
+                "version": 1,
+                "active": "pirate",
+                "personalities": {
+                    "pirate": {
+                        "display_name": "Pirate",
+                        "system_prompt": "Pirate.",
+                        "opening_lines": {
+                            "morning": ["Greeting A."],
+                            "afternoon": ["Greeting A."],
+                            "evening": ["Greeting A."],
+                            "night": ["Greeting A."],
+                        },
+                        "goodbye_lines": ["Goodbye."],
+                        "idle_lines": ["Idle."],
+                        "fallback_line": "Repeat.",
+                        "default_scene": "awakening",
+                    },
+                },
+            })
+            scenes_path = self._write(root, "scenes.json", self._valid_scenes())
+            manager = ContentManager(
+                personalities_path=str(personalities_path),
+                requested_personality="pirate",
+                current_personality="pirate",
+                scenes_path=str(scenes_path),
+                sound_directory=str(root),
+            )
+
+            original = manager.reload_or_keep()
+            self.assertIsNotNone(original)
+
+            # A foreground interrupt prevents commit; reload_or_keep returns
+            # the current active and counts the failure.
+            result = manager.reload_or_keep(interrupted=lambda: True)
+            self.assertIs(result, original)
+            self.assertIs(manager.active, original)
+            self.assertEqual(manager.reload_count, 1)
+            self.assertEqual(manager.failure_count, 1)
+
+    def test_reload_count_increments_on_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            personalities_path = self._write(root, "personalities.json", {
+                "version": 1,
+                "active": "pirate",
+                "personalities": {
+                    "pirate": {
+                        "display_name": "Pirate",
+                        "system_prompt": "Pirate.",
+                        "opening_lines": {
+                            "morning": ["Greeting A."],
+                            "afternoon": ["Greeting A."],
+                            "evening": ["Greeting A."],
+                            "night": ["Greeting A."],
+                        },
+                        "goodbye_lines": ["Goodbye."],
+                        "idle_lines": ["Idle."],
+                        "fallback_line": "Repeat.",
+                        "default_scene": "awakening",
+                    },
+                },
+            })
+            scenes_path = self._write(root, "scenes.json", self._valid_scenes())
+            manager = ContentManager(
+                personalities_path=str(personalities_path),
+                requested_personality="pirate",
+                current_personality="pirate",
+                scenes_path=str(scenes_path),
+                sound_directory=str(root),
+            )
+
+            manager.reload()
+            manager.reload()
+            self.assertEqual(manager.reload_count, 2)
+            self.assertEqual(manager.failure_count, 0)
+
+    def test_manager_initial_active_is_none(self):
+        manager = ContentManager(
+            personalities_path="unused.json",
+            requested_personality="pirate",
+            current_personality="pirate",
+            scenes_path="unused2.json",
+            sound_directory="/tmp",
+        )
+        self.assertIsNone(manager.active)
+        self.assertEqual(manager.reload_count, 0)
+        self.assertEqual(manager.failure_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
