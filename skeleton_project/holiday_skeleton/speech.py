@@ -390,7 +390,10 @@ class PiperSpeechEngine:
     ) -> SpeechMetrics:
         """Synthesize and play text without a temporary WAV file."""
 
-        if not text:
+        # None, empty, or whitespace-only input is a no-op: it produces no
+        # audio. Coerce through str so a non-string argument cannot reach
+        # synthesis, matching speak_phrases.
+        if not str(text or "").strip():
             return SpeechMetrics(0.0, 0.0, 0.0, 0)
 
         return self.speak_phrases(
