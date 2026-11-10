@@ -18,6 +18,10 @@ class SceneConfigError(ValueError):
     """A scene file is unsafe or does not match the supported schema."""
 
 
+# Maximum servo travel angle in degrees for a single PCA9685 channel.
+MAX_SERVO_ANGLE_DEGREES = 180.0
+
+
 class SceneAction(str, Enum):
     SPEAK = "speak"
     PAUSE = "pause"
@@ -102,6 +106,13 @@ def _boolean(value: Any, field: str) -> bool:
     return value
 
 
+def _servo_angle(value: Any, field: str) -> float:
+    """Validate a servo angle in degrees; must not exceed hardware safety limit."""
+
+    result = _number(value, field, 0.0, MAX_SERVO_ANGLE_DEGREES)
+    return result
+
+
 def _duration(step: Mapping[str, Any], maximum: float = 30.0) -> float:
     if "duration" in step and "duration_ms" in step:
         raise SceneConfigError("use duration or duration_ms, not both")
@@ -149,6 +160,8 @@ def _validate_step(raw: Any, location: str) -> SceneStep:
             "level": _number(raw.get("level"), f"{location}.level", 0.0, 1.0),
             "duration": _duration(raw),
         }
+        if "angle" in raw:
+            _servo_angle(raw["angle"], f"{location}.angle")
     elif action is SceneAction.BLINK:
         low = _number(raw.get("low", 0.0), f"{location}.low", 0.0, 1.0)
         high = _number(raw.get("high", 1.0), f"{location}.high", 0.0, 1.0)
@@ -186,6 +199,8 @@ def _validate_step(raw: Any, location: str) -> SceneStep:
             "level": _number(raw.get("level"), f"{location}.level", 0.0, 1.0),
             "duration": duration,
         }
+        if "angle" in raw:
+            _servo_angle(raw["angle"], f"{location}.angle")
     else:
         parameters = {
             "file": _sound_name(raw.get("file")),

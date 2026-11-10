@@ -17,6 +17,9 @@ class PersonalityConfigError(ValueError):
 _PACK_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _PERIODS = ("morning", "afternoon", "evening", "night")
 
+# Maximum volume percentage for the amplifier hardware.
+MAX_VOLUME_PERCENT = 100.0
+
 
 def _reject_unknown(raw: Mapping[str, Any], allowed: set[str], field: str) -> None:
     unknown = set(raw) - allowed
@@ -258,7 +261,9 @@ def _parse_pack(name: str, raw: Any) -> PersonalityPack:
     voice_raw = raw.get("voice", {})
     if not isinstance(voice_raw, Mapping):
         raise PersonalityConfigError(f"{name}.voice must be an object")
-    _reject_unknown(voice_raw, {"volume_multiplier"}, f"{name}.voice")
+    _reject_unknown(voice_raw, {"volume_multiplier", "volume"}, f"{name}.voice")
+    if "volume" in voice_raw:
+        _number(voice_raw["volume"], f"{name}.voice.volume", 0, MAX_VOLUME_PERCENT)
     voice = VoiceSettings(
         volume_multiplier=float(
             _number(voice_raw.get("volume_multiplier", 1.0), f"{name}.voice.volume_multiplier", 0.25, 2.0)
