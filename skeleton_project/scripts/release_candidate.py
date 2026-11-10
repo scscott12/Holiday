@@ -146,6 +146,7 @@ def main(arguments: list[str] | None = None) -> int:
                 finalize_evidence(payload, _probe(), options.operator)
                 save_evidence(evidence_path, payload)
             digest_path = write_digest(evidence_path)
+            verify_digest(evidence_path)
             print(f"Release candidate passed: {evidence_path}")
             print(f"Evidence digest: {digest_path}")
         elif options.command == "verify":
