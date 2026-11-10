@@ -218,6 +218,7 @@ class BargeInMonitor:
         partial_confirmations: int = 2,
         parent_stop_event: threading.Event | None = None,
         corroboration_seconds: float = 1.25,
+        require_corroboration: bool = False,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.audio_module = audio_module
@@ -235,6 +236,7 @@ class BargeInMonitor:
         self.partial_confirmations = int(partial_confirmations)
         self.parent_stop_event = parent_stop_event
         self.corroboration_seconds = max(0.10, float(corroboration_seconds))
+        self.require_corroboration = bool(require_corroboration)
         self.clock = clock
 
         self.interrupt_event = threading.Event()
@@ -402,7 +404,11 @@ class BargeInMonitor:
 
                     if pending_match is None:
                         continue
-                    if verification_recognizer is not None and not any(
+                    if verification_recognizer is None:
+                        if self.require_corroboration:
+                            # No second source can confirm the command.
+                            continue
+                    elif not any(
                         _corroborates_command(text, pending_match.transcript)
                         for _, text in verification_history
                     ):
