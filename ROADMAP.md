@@ -22,6 +22,13 @@ The direction is a responsive, dependable Raspberry Pi skeleton operated through
 - **Coverage reporting:** `test_coverage.py` runs the hardware-free tests under `coverage`, asserts ≥ 80% coverage of `holiday_skeleton`, and excludes itself to avoid recursion. Added to CI via `requirements-ci.txt` and `test_ci_config.py` verifies the dependency.
 - **Static linting:** `test_lint.py` runs `flake8` over `holiday_skeleton/` and `scripts/` as a CI gate. `test_lint_config.py` checks that the flake8 configuration is sensible.
 
+## Built
+
+- **Roadmap refresh (#144):** refreshed this roadmap's status, so its sections and "Planned Next" list now match the current checkout instead of the stale draft.
+- **Hardware safety limits (#145):** `personality.py` caps amplifier `voice.volume` at `MAX_VOLUME_PERCENT` and `scene.py` caps motor `angle` at `MAX_SERVO_ANGLE_DEGREES`, so scene and personality config cannot request travel beyond the hardware's safe range.
+- **Release candidate evidence (#146):** `release_candidate.py` calls `verify_digest` after writing acceptance evidence, so the recorded evidence is confirmed against its digest at the same time it is produced.
+- **Barge-in corroboration (#147):** `BargeInMonitor` gained a `require_corroboration` option; when set and no verification decoder is configured, an uncorroborated command is not accepted on the constrained decoder alone.
+
 ## Planned Next
 
 1. Follow the documented first-production-release gate: test the exact candidate, rehearse recovery and rollback, verify physical behavior, and complete an uninterrupted eight-hour soak with three healthy samples. Create `v1.0` only after the private evidence and digest verify ([release procedure](skeleton_project/RELEASE.md), PR #20).
