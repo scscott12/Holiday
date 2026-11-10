@@ -17,11 +17,15 @@ The direction is a responsive, dependable Raspberry Pi skeleton operated through
 - **Transcript notifications:** [PR #36](https://github.com/scscott12/Holiday/pull/36) supplies full transcripts through the Home Assistant `full_text` attribute. The Telegram automation lives outside this repository; that PR could not verify the complete notification path and was not tested on the Pi.
 - **Compatibility limits:** legacy Piper playback lacks the streaming path's interruption support; speech scenes require streaming Piper, and legacy sound cues ignore per-cue volume. These are documented limits, not confirmed promises of future parity.
 
+## Completed
+
+- **Coverage reporting:** `test_coverage.py` runs the hardware-free tests under `coverage`, asserts ≥ 80% coverage of `holiday_skeleton`, and excludes itself to avoid recursion. Added to CI via `requirements-ci.txt` and `test_ci_config.py` verifies the dependency.
+- **Static linting:** `test_lint.py` runs `flake8` over `holiday_skeleton/` and `scripts/` as a CI gate. `test_lint_config.py` checks that the flake8 configuration is sensible.
+
 ## Planned Next
 
 1. Follow the documented first-production-release gate: test the exact candidate, rehearse recovery and rollback, verify physical behavior, and complete an uninterrupted eight-hour soak with three healthy samples. Create `v1.0` only after the private evidence and digest verify ([release procedure](skeleton_project/RELEASE.md), PR #20).
-2. Continue the explicit quality backlog: add measured coverage reporting and a minimum CI threshold ([#35](https://github.com/scscott12/Holiday/issues/35)), and conservative static linting ([#47](https://github.com/scscott12/Holiday/issues/47)). Both issues were open when reviewed; neither gate is present in this checkout.
-3. Carry recent audio and quiet-visit fixes through physical acceptance, checking real visitor speech, false triggers, interruption, and notification delivery. PR #36's hardware validation remains unconfirmed; broader feature priorities belong in the owner questions below.
+2. Carry recent audio and quiet-visit fixes through physical acceptance, checking real visitor speech, false triggers, interruption, and notification delivery. PR #36's hardware validation remains unconfirmed; broader feature priorities belong in the owner questions below.
 
 ## Risks
 
